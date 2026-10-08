@@ -461,8 +461,11 @@ class PlayerSession {
     this.link = new PlayerLink(this.code, {
       hello: () => ({ clientId: this.ident.clientId, name: this.ident.name }),
       onStatus: (s) => {
+        const could = this.status === 'online';
         this.status = s;
-        renderStatus(this);
+        // Action buttons depend on whether the host is reachable.
+        if (could !== (s === 'online') && this.game) rerender(this, []);
+        else renderStatus(this);
       },
       onMessage: (msg) => this.onMessage(msg),
     });
@@ -619,6 +622,13 @@ function statusText(s) {
   return t({ connecting: 'conn.connecting', online: 'conn.online', offline: 'conn.offline', noHost: 'conn.noHost' }[s.status] || 'conn.connecting');
 }
 
+// One or two words for the header; the banner carries the full sentence.
+function statusShort(s) {
+  if (s.role === 'player' && s.status === 'noHost') return t('conn.hostAway');
+  if (s.role === 'player' && s.status === 'offline') return t('conn.offlineShort');
+  return statusText(s);
+}
+
 function statusTone(s) {
   if (s.status === 'live' || s.status === 'online') return 'ok';
   if (s.status === 'starting' || s.status === 'connecting') return 'wait';
@@ -631,6 +641,7 @@ function renderStatus(s) {
   const dot = app.querySelector('[data-status-dot]');
   if (dot) dot.dataset.tone = statusTone(s);
   app.querySelectorAll('[data-status-text]').forEach((el) => (el.textContent = statusText(s)));
+  app.querySelectorAll('[data-status-short]').forEach((el) => (el.textContent = statusShort(s)));
   const banner = app.querySelector('[data-conn-banner]');
   if (banner) {
     const bad = statusTone(s) === 'bad' || (s.role === 'player' && s.status !== 'online');
@@ -710,7 +721,7 @@ function renderTable(s) {
 
   app.innerHTML = `
   <main class="page page--game">
-    ${gameHeader(s, `<span data-status-text>${esc(statusText(s))}</span> · <span dir="ltr">${g.code}</span> · <span data-elapsed>${esc(t('game.elapsed', { time: duration(Date.now() - g.createdAt) }))}</span>`)}
+    ${gameHeader(s, `<span data-status-short>${esc(statusShort(s))}</span> · <span dir="ltr">${g.code}</span> · <span data-elapsed>${esc(t('game.elapsed', { time: duration(Date.now() - g.createdAt) }))}</span>`)}
     ${
       showTip
         ? `<div class="banner banner--tip"><span>${esc(t('game.keepOpen'))}</span><button class="btn btn--sm btn--ghost" data-act="tip">${esc(t('game.gotIt'))}</button></div>`
