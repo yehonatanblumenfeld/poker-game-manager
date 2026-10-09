@@ -898,6 +898,11 @@ select.input {
   color: var(--muted);
 }
 
+.stats-clear {
+  width: 100%;
+  margin-top: 12px;
+}
+
 .list-row--static {
   cursor: default;
 }

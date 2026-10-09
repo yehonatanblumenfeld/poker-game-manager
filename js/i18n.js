@@ -249,6 +249,10 @@ const en = {
   'stats.none': 'Finished games show up here.',
   'stats.delete': 'Delete',
   'stats.clearConfirm': 'Remove this game from your history?',
+  'stats.deleteHostConfirm': 'You hosted this game. Deleting it removes it for all its players too. Delete?',
+  'stats.clearAll': 'Clear history',
+  'stats.clearAllConfirm': 'Remove all games from your history?',
+  'stats.clearAllHostConfirm': 'Remove all games from your history? Games you hosted are deleted for their players too.',
 
   'auth.google': 'Continue with Google',
   'auth.signIn': 'Sign in',
@@ -531,6 +535,10 @@ const he = {
   'stats.none': 'משחקים שהסתיימו יופיעו כאן.',
   'stats.delete': 'מחיקה',
   'stats.clearConfirm': 'למחוק את המשחק מההיסטוריה?',
+  'stats.deleteHostConfirm': 'אירחת את המשחק הזה. מחיקה תסיר אותו גם אצל כל השחקנים. למחוק?',
+  'stats.clearAll': 'ניקוי ההיסטוריה',
+  'stats.clearAllConfirm': 'למחוק את כל המשחקים מההיסטוריה?',
+  'stats.clearAllHostConfirm': 'למחוק את כל המשחקים מההיסטוריה? משחקים שאירחת יימחקו גם אצל השחקנים שלהם.',
 
   'auth.google': 'המשך עם Google',
   'auth.signIn': 'התחברות',

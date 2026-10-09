@@ -1888,6 +1888,28 @@ function loadCloudHistory() {
     .catch(() => toast(t('stats.loadFailed'), { tone: 'error' }));
 }
 
+// Take games out of the history: from this device, and from the account
+// when they're saved there (a host's own game is deleted for everyone).
+async function removeHistory(entries) {
+  const failed = new Set();
+  await Promise.all(
+    entries.map(async (h) => {
+      if (h.cloud) {
+        try {
+          await cloud.removeGame(h.id);
+        } catch {
+          failed.add(h.id);
+          return;
+        }
+        cloudHistory = (cloudHistory ?? []).filter((g) => g.id !== h.id);
+      }
+      storage.deleteHistory(h.id);
+    }),
+  );
+  if (failed.size) toast(t('err.generic'), { tone: 'error' });
+  if (location.hash === '#/stats') viewStats(undefined, { refetch: false });
+}
+
 function viewStats(id, { refetch = true } = {}) {
   if (id) return viewPastGame(id);
   const hist = historyEntries();
@@ -1980,19 +2002,25 @@ function viewStats(id, { refetch = true } = {}) {
               const main = `<span class="list-row__main"><span class="list-row__title">${esc(h.name)}</span>
               <span class="list-row__sub">${esc(date(h.startedAt))} · ${money(pot, h.currency)}${top && top.net > 0 ? ` · <bdi>${esc(top.name)}</bdi> ${money(top.net, h.currency, { sign: true })}` : ''}</span></span>
               ${me ? `<strong class="${me.net > 0 ? 'pos' : me.net < 0 ? 'neg' : ''}">${money(me.net, h.currency, { sign: true })}</strong>` : ''}`;
+              const del = `<button class="icon-btn list-item__del" data-del="${esc(h.id)}" aria-label="${esc(t('stats.delete'))}">${ICONS.close}</button>`;
               return h.cloud
-                ? `<li><a class="list-row" href="#/stats/${esc(h.id)}">${main} ${ICONS.arrow}</a></li>`
-                : `<li class="list-row list-row--static">${main}<button class="btn btn--sm btn--ghost" data-del="${esc(h.id)}">${esc(t('stats.delete'))}</button></li>`;
+                ? `<li class="list-item"><a class="list-row" href="#/stats/${esc(h.id)}">${main} ${ICONS.arrow}</a>${del}</li>`
+                : `<li class="list-item"><div class="list-row list-row--static">${main}</div>${del}</li>`;
             })
-            .join('')}</ul></section>`
+            .join('')}</ul>
+          <button class="btn btn--ghost btn--danger-text stats-clear" data-clear>${esc(t('stats.clearAll'))}</button></section>`
         : `<p class="hint hint--center">${esc(t(signedIn && cloudHistory === null ? 'stats.loading' : 'stats.none'))}</p>`
     }
   </main>`;
   app.querySelector('.page').addEventListener('click', (e) => {
     const del = e.target.closest('[data-del]');
-    if (del && confirm(t('stats.clearConfirm'))) {
-      storage.deleteHistory(del.dataset.del);
-      viewStats();
+    if (del) {
+      const h = hist.find((x) => x.id === del.dataset.del);
+      if (h && confirm(t(h.cloud && h.isHost ? 'stats.deleteHostConfirm' : 'stats.clearConfirm'))) removeHistory([h]);
+    }
+    if (e.target.closest('[data-clear]')) {
+      const hosted = hist.some((h) => h.cloud && h.isHost);
+      if (confirm(t(hosted ? 'stats.clearAllHostConfirm' : 'stats.clearAllConfirm'))) removeHistory(hist);
     }
   });
   if (signedIn && refetch) {
@@ -2031,7 +2059,7 @@ function viewPastGame(id) {
     app.querySelector('.page--results .stack')?.insertAdjacentHTML('beforeend', `<button class="btn btn--ghost btn--danger-text" data-remove>${esc(t('stats.delete'))}</button>`);
   }
   app.querySelector('[data-remove]')?.addEventListener('click', () => {
-    if (!confirm(t('stats.clearConfirm'))) return;
+    if (!confirm(t(row.is_host ? 'stats.deleteHostConfirm' : 'stats.clearConfirm'))) return;
     cloud
       .removeGame(id)
       .then(() => {
