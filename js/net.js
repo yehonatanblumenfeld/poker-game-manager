@@ -100,8 +100,9 @@ class Seen {
 // ---------------- host ----------------
 
 export class HostLink {
-  constructor(client, secret, { onMessage, onPresence, onStatus }) {
+  constructor(client, secret, { onMessage, onPresence, onStatus, onRival }) {
     this.client = client;
+    this.onRival = onRival;
     this.onMessage = onMessage;
     this.onPresence = onPresence;
     this.onStatus = onStatus;
@@ -136,7 +137,10 @@ export class HostLink {
 
   presence() {
     const next = new Set();
-    for (const [key, metas] of Object.entries(this.channel.presenceState())) {
+    const state = this.channel.presenceState();
+    // Another device hosting the same table (the host took over elsewhere).
+    if ((state.host ?? []).some((m) => m.key && m.key !== this.publicKey)) this.onRival?.();
+    for (const [key, metas] of Object.entries(state)) {
       if (key === 'host') continue;
       for (const m of metas) if (m.pid) next.add(m.pid);
     }

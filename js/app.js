@@ -8,6 +8,7 @@ import {
   apply,
   ActionError,
   storage,
+  uid,
   normalizeCode,
   CODE_LENGTH,
   isSecret,
@@ -658,10 +659,19 @@ class HostSession {
         this.status = st;
         renderStatus(this);
       },
+      onRival: () => this.checkRival(),
     });
     // Players only trust the keys saved with the game, so save them first.
     this.link.ready.then(async () => {
       if (!this.link.anchor) return;
+      // Hosted from another device since this one last did (a takeover):
+      // that one has the newer table, so be its second screen instead.
+      let saved = null;
+      try {
+        saved = await cloud.gameState(this.game.secret);
+      } catch {}
+      if (this !== session) return;
+      if (saved?.id === this.game.id && saved.keys?.dh && this.game.keys?.dh && saved.keys.dh !== this.game.keys.dh) return this.stepDown();
       this.game.keys = this.link.anchor;
       // The host's own account owns their seat too (older games, takeovers).
       const me = player(this.game, this.game.managerId);
@@ -678,6 +688,31 @@ class HostSession {
 
   online() {
     return new Set(this.link.online());
+  }
+
+  // Two devices hosting one table: the one whose keys the saved game holds
+  // (the newer takeover) keeps it; this one steps back into the host's seat
+  // as a second screen, so both show the same table.
+  checkRival() {
+    if (this.rivalCheck) return;
+    this.rivalCheck = setTimeout(async () => {
+      this.rivalCheck = null;
+      let saved = null;
+      try {
+        saved = await cloud.gameState(this.game.secret);
+      } catch {}
+      if (this !== session || !saved?.keys?.dh || !this.link.anchor) return;
+      if (saved.keys.dh !== this.link.anchor.dh && saved.id === this.game.id) this.stepDown();
+    }, 2000);
+  }
+
+  stepDown() {
+    const name = player(this.game, this.game.managerId)?.name;
+    this.destroy();
+    storage.dropHosted(this.code);
+    toast(t('host.moved'));
+    startSession(new PlayerSession(this.code, this.game.secret, { name }));
+    rerender(session, []);
   }
 
   // Keep the screen on while the game is live. `awake` says whether the
@@ -735,7 +770,9 @@ class HostSession {
       const pid = this.link.pidOf(sid);
       if (!pid) return;
       try {
-        const r = apply(this.game, String(msg.type), { ...(msg.payload || {}) }, { pid, host: false });
+        // Only a checked sign-in to the host's account lands in the host's
+        // seat, so that device may run the game too.
+        const r = apply(this.game, String(msg.type), { ...(msg.payload || {}) }, { pid, host: pid === this.game.managerId });
         this.link.send(sid, { t: 'ok', rid: msg.rid });
         this.changed(r.entry);
       } catch (e) {
@@ -757,6 +794,7 @@ class HostSession {
   }
 
   destroy() {
+    clearTimeout(this.rivalCheck);
     this.link.close();
     this.lock?.release?.().catch(() => {});
     document.removeEventListener('visibilitychange', this.onVis);
@@ -764,16 +802,25 @@ class HostSession {
   }
 }
 
+// A player's own moves, which wait for the host if it's away.
+const QUEUED = new Set(['sit', 'buyin', 'leave', 'return']);
+
 class PlayerSession {
   // `secret` comes from the invite link, from this device, or from the code.
-  constructor(code, secret) {
+  constructor(code, secret, { name = null } = {}) {
     this.role = 'player';
     this.code = code;
     this.game = storage.snapshot(code);
     this.ident = storage.me(code);
+    // The host's account on another device joins straight into its seat.
+    if (!this.ident && name && secret) {
+      this.ident = { clientId: storage.clientId(), name, pid: null, secret };
+      storage.saveMe(code, this.ident);
+    }
     this.me = this.ident?.pid ?? null;
     this.secret = secret || this.ident?.secret || this.game?.secret || null;
     this.status = 'connecting';
+    this.queue = storage.queue(code);
     this.start();
   }
 
@@ -848,6 +895,7 @@ class PlayerSession {
       this.ident.pid = msg.pid;
       storage.saveMe(this.code, this.ident);
       if (this.game) cloud.linkGame(this.game.id, this.me);
+      this.flush();
       return;
     }
     if (msg.t === 'err' && !msg.rid) {
@@ -882,12 +930,64 @@ class PlayerSession {
     rerender(this, fresh);
   }
 
+  // A player's own actions never get lost: when the host is away (asleep,
+  // screen locked) they wait on this phone and go out when the host is back.
   dispatch(type, payload) {
-    if (!this.link) return Promise.reject(new Error('offline'));
-    return this.link.request(type, payload).catch((e) => {
-      toast(t(`err.${e.code || 'generic'}`), { tone: 'error' });
-      throw e;
-    });
+    if (!QUEUED.has(type)) {
+      if (!this.link) return Promise.reject(new Error('offline'));
+      return this.link.request(type, payload).catch((e) => {
+        toast(t(`err.${e.code || 'generic'}`), { tone: 'error' });
+        throw e;
+      });
+    }
+    const job = { qid: uid(12), type, payload };
+    if (!this.flushing && !this.queue.length && this.link?.welcomed) {
+      return this.link.request(type, { ...payload, qid: job.qid }).catch((e) => {
+        if (e.code !== 'timeout') {
+          toast(t(`err.${e.code || 'generic'}`), { tone: 'error' });
+          throw e;
+        }
+        this.enqueue(job);
+      });
+    }
+    this.enqueue(job);
+    return Promise.resolve();
+  }
+
+  enqueue(job) {
+    this.queue = [...this.queue, job];
+    storage.saveQueue(this.code, this.queue);
+    toast(t('queue.saved'));
+    rerender(this, []);
+  }
+
+  // Send waiting actions in order. Each carries its id, so one the host
+  // already took (but whose answer got lost) isn't counted twice.
+  async flush() {
+    if (this.flushing || !this.link?.welcomed || !this.queue.length) return;
+    this.flushing = true;
+    let sent = 0;
+    try {
+      while (this.queue.length && this.link?.welcomed) {
+        const job = this.queue[0];
+        try {
+          await this.link.request(job.type, { ...job.payload, qid: job.qid });
+          sent++;
+        } catch (e) {
+          if (e.code === 'timeout') break;
+          toast(t(`err.${e.code || 'generic'}`), { tone: 'error' });
+        }
+        this.queue = this.queue.slice(1);
+        storage.saveQueue(this.code, this.queue);
+      }
+    } finally {
+      this.flushing = false;
+    }
+    if (sent) toast(t('queue.sent'), { tone: 'good' });
+    if (this !== session) return;
+    // The host is there but slow to answer: try again shortly.
+    if (this.queue.length && this.link?.welcomed) setTimeout(() => this === session && this.flush(), 8000);
+    rerender(this, []);
   }
 
   destroy() {
@@ -930,8 +1030,10 @@ function viewGame(code, secret) {
       const asked = code;
       cloud.liveHosted(code).then((state) => {
         if (session || currentCode() !== asked) return;
-        if (state) return offerTakeover(state, secret);
-        startSession(new PlayerSession(code, secret));
+        // It is: sit in the host's seat and run the game from here too.
+        // Taking over as the host is offered only if the host is away.
+        const host = state && state.players.find((p) => p.id === state.managerId);
+        startSession(new PlayerSession(code, secret || state?.secret, host ? { name: host.name } : {}));
         rerender(session, []);
       });
       return;
@@ -956,25 +1058,16 @@ function renderLoading() {
   app.innerHTML = `<main class="page page--center"><div class="loader" aria-hidden="true"><span></span><span></span><span></span></div></main>`;
 }
 
-function offerTakeover(state, secret) {
-  app.innerHTML = `
-  <main class="page page--center">
-    <h1 class="gate__title">${esc(state.name)}</h1>
-    <p class="hint hint--center">${esc(t('takeover.text'))}</p>
-    <div class="stack stack--tight">
-      <button class="btn btn--primary btn--lg" data-take>${esc(t('takeover.host'))}</button>
-      <button class="btn btn--lg" data-join>${esc(t('takeover.join'))}</button>
-    </div>
-  </main>`;
-  app.querySelector('[data-take]').addEventListener('click', () => {
-    storage.saveHosted(state);
-    startSession(new HostSession(state.code));
-    rerender(session, []);
-  });
-  app.querySelector('[data-join]').addEventListener('click', () => {
-    startSession(new PlayerSession(state.code, secret || state.secret));
-    rerender(session, []);
-  });
+// The host's own device is gone (dead phone, closed laptop): run the game
+// from this one, starting from the table as last saved.
+async function takeOver(s) {
+  const state = await s.fetchSaved();
+  if (s !== session) return;
+  if (!state || state.status !== 'live') return toast(t('err.generic'), { tone: 'error' });
+  s.destroy();
+  storage.saveHosted(state);
+  startSession(new HostSession(state.code));
+  rerender(session, []);
 }
 
 function renderMissing(key = 'game.notFound') {
@@ -1078,6 +1171,8 @@ function renderStatus(s) {
     const bad = statusTone(s) === 'bad' || (s.role === 'player' && s.status !== 'online');
     banner.hidden = !bad;
     banner.querySelector('span').textContent = statusText(s);
+    const take = banner.querySelector('[data-act="takeover"]');
+    if (take) take.hidden = !canTakeOver(s);
   }
 }
 
@@ -1086,6 +1181,11 @@ function updateClocks() {
   app.querySelectorAll('[data-elapsed]').forEach((el) => {
     el.textContent = t('game.elapsed', { time: duration(Date.now() - session.game.createdAt) });
   });
+}
+
+// The host's account on another device, while the host's device is away.
+function canTakeOver(s) {
+  return s.role === 'player' && s.status === 'noHost' && runsGame(s) && !!cloud.user() && s.game?.status === 'live';
 }
 
 function gameHeader(s, sub) {
@@ -1098,7 +1198,9 @@ function gameHeader(s, sub) {
     </div>
     ${langButton()}
   </header>
-  <div class="banner banner--warn" data-conn-banner ${statusTone(s) === 'bad' || (s.role === 'player' && s.status !== 'online') ? '' : 'hidden'}><span>${esc(statusText(s))}</span></div>`;
+  <div class="banner banner--warn" data-conn-banner ${statusTone(s) === 'bad' || (s.role === 'player' && s.status !== 'online') ? '' : 'hidden'}><span>${esc(statusText(s))}</span>${
+    s.role === 'player' ? `<button class="btn btn--sm btn--ghost" data-act="takeover" ${canTakeOver(s) ? '' : 'hidden'}>${esc(t('takeover.host'))}</button>` : ''
+  }</div>`;
 }
 
 // ---------------- live table ----------------
@@ -1109,13 +1211,20 @@ function seatPosition(display, n) {
   return { x: 50 + 39 * Math.cos(angle), y: 50 + 42 * Math.sin(angle) };
 }
 
+// The host's device, or another device signed in to the host's account
+// (it sits in the host's seat and the host lets it do everything).
+function runsGame(s) {
+  return s.role === 'host' || (!!s.me && s.me === s.game?.managerId);
+}
+
 function renderTable(s) {
   const g = s.game;
   const me = player(g, s.me);
   const online = s.online();
   const totals = tableTotals(g);
-  const isHost = s.role === 'host';
-  const canAct = isHost || s.status === 'online';
+  const isHost = runsGame(s);
+  // Players can always act on their own seat; moves wait if the host is away.
+  const canAct = isHost || !!s.me;
   const seated = new Map(g.players.filter((p) => p.status === 'playing' && p.seat !== null).map((p) => [p.seat, p]));
 
   const seats = [];
@@ -1157,6 +1266,11 @@ function renderTable(s) {
     ${
       showTip
         ? `<div class="banner banner--tip"><span>${esc(t('game.keepOpen'))}</span><button class="btn btn--sm btn--ghost" data-act="tip">${esc(t('game.gotIt'))}</button></div>`
+        : ''
+    }
+    ${
+      !isHost && s.queue?.length
+        ? `<div class="banner banner--tip"><span>${esc(t('queue.waiting', { n: s.queue.length }))}</span></div>`
         : ''
     }
     ${needSeat ? `<div class="banner banner--accent"><span>${esc(t('game.pickSeat'))}</span></div>` : ''}
@@ -1288,6 +1402,9 @@ function bindGame(s) {
         return openLog(s);
       case 'add':
         return openAddPlayer(s, null);
+      case 'takeover':
+        el.disabled = true;
+        return takeOver(s);
       case 'tip':
         storage.markTip('keepOpen');
         return el.closest('.banner').remove();
@@ -1328,7 +1445,7 @@ function withRefresh(s, fn) {
 }
 
 function openPlayer(s, pid) {
-  const isHost = s.role === 'host';
+  const isHost = runsGame(s);
   const self = pid === s.me;
   const p0 = player(s.game, pid);
   if (!p0) return;
@@ -1525,7 +1642,7 @@ function openLeave(s, pid) {
   const g = s.game;
   const p = player(g, pid);
   if (!p) return;
-  const isHost = s.role === 'host';
+  const isHost = runsGame(s);
   sheet({
     title: pid === s.me ? t('leave.title') : t('leave.titleFor', { name: p.name }),
     render: (b, close) => {
@@ -1776,7 +1893,7 @@ function renderResults(s) {
   const res = gameResults(g).sort((a, b) => b.net - a.net);
   const mode = g.result.mode;
   const list = transfers(g, res, mode);
-  const isHost = s.role === 'host';
+  const isHost = runsGame(s);
   const me = s.me;
   const myNet = res.find((r) => r.id === me)?.net;
   const mine = list.filter((x) => x.from === me || x.to === me);
@@ -1877,12 +1994,12 @@ function renderResults(s) {
     <div class="stack stack--tight section">
       <button class="btn btn--primary btn--lg" data-act="share">${ICONS.share}<span>${esc(t('res.share'))}</span></button>
       ${
-        isHost
+        s.role === 'host'
           ? `<button class="btn btn--lg" data-act="rematch">${esc(t('res.rematch'))}</button>
-             <p class="hint hint--center">${esc(t('res.rematchHint'))}</p>
-             <button class="btn btn--ghost" data-act="reopen">${esc(t('res.reopen'))}</button>`
+             <p class="hint hint--center">${esc(t('res.rematchHint'))}</p>`
           : ''
       }
+      ${isHost ? `<button class="btn btn--ghost" data-act="reopen">${esc(t('res.reopen'))}</button>` : ''}
     </div>
   </main>`;
   bindGame(s);
