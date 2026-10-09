@@ -62,6 +62,17 @@ function supabaseBackend() {
       const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo } });
       if (error) throw error;
     },
+    async token() {
+      const { data } = await sb.auth.getSession();
+      return data.session?.access_token ?? null;
+    },
+    // Who a player's token belongs to, checked with Supabase Auth.
+    async verify(token) {
+      const { data, error } = await sb.auth.getUser(token);
+      if (error) throw error;
+      const u = data.user;
+      return u ? { id: u.id, pic: u.user_metadata?.avatar_url || u.user_metadata?.picture || '' } : null;
+    },
     async signOut() {
       await sb.auth.signOut();
     },
@@ -215,6 +226,27 @@ export const cloud = {
     if (!client || !user) return null;
     try {
       return await client.liveHosted(code);
+    } catch {
+      return null;
+    }
+  },
+
+  // The signed-in user's access token, sent (encrypted) to the host when
+  // joining so the host can match the account to its seat.
+  async token() {
+    if (!client || !user) return null;
+    try {
+      return await client.token();
+    } catch {
+      return null;
+    }
+  },
+
+  // The account behind a player's token ({ id, pic }), or null if it doesn't check out.
+  async verify(token) {
+    if (!client || !token) return null;
+    try {
+      return await client.verify(String(token).slice(0, 4096));
     } catch {
       return null;
     }

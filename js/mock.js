@@ -98,12 +98,17 @@ export function mockBackend() {
     async session() {
       return user();
     },
+    // Mock tokens are just the user id; the server checks they exist.
+    async token() {
+      return user()?.id ?? null;
+    },
+    verify: (token) => rpc('verify', { token }),
     onAuth(fn) {
       authCb = fn;
     },
     async signIn() {
       const name = new URLSearchParams(location.search).get('mockName') || 'Test Host';
-      const u = { id: `u-${name.toLowerCase().replace(/\W/g, '')}`, email: `${name.split(' ')[0].toLowerCase()}@example.com`, user_metadata: { full_name: name } };
+      const u = { id: `u-${name.toLowerCase().replace(/\W/g, '')}`, email: `${name.split(' ')[0].toLowerCase()}@example.com`, user_metadata: { full_name: name, avatar_url: `https://lh3.googleusercontent.com/a/u-${name.toLowerCase().replace(/\W/g, '')}=s96-c` } };
       localStorage.setItem(USER_KEY, JSON.stringify(u));
       authCb(u);
     },

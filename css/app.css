@@ -1052,6 +1052,16 @@ select.input {
   border: 1px dashed rgba(255, 255, 255, 0.35);
 }
 
+.avatar__pic {
+  position: absolute;
+  inset: 17%;
+  width: 66%;
+  height: 66%;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--c);
+}
+
 .avatar--lg {
   width: 52px;
   height: 52px;
