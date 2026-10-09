@@ -618,7 +618,7 @@ function viewNew() {
     f.seats = Math.min(10, Math.max(2, f.seats + Number(step.dataset.step)));
     form.seatsOut.value = f.seats;
   });
-  form.addEventListener('submit', (e) => {
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const { v, ok } = sync();
     if (!ok) {
@@ -632,6 +632,9 @@ function viewNew() {
     }
     storage.setLastName(v.hostName);
     const game = createGame(v);
+    // Tie the host's seat to their account from the start, so their other
+    // devices land on it rather than taking a second seat.
+    if (cloud.user()) player(game, game.managerId).acct = await accountKey(cloud.user().id);
     storage.saveHosted(game);
     go(`/game/${game.code}`, { replace: true });
   });
@@ -677,11 +680,21 @@ class HostSession {
     return new Set(this.link.online());
   }
 
+  // Keep the screen on while the game is live. `awake` says whether the
+  // phone agreed; the keep-open note only shows when it didn't.
   async wake() {
-    if (this.game.status !== 'live' || !('wakeLock' in navigator)) return;
-    try {
-      this.lock = await navigator.wakeLock.request('screen');
-    } catch {}
+    if (this.game.status !== 'live') return;
+    let ok = false;
+    if ('wakeLock' in navigator) {
+      try {
+        this.lock = await navigator.wakeLock.request('screen');
+        ok = true;
+      } catch {}
+    }
+    if (this.awake !== ok) {
+      this.awake = ok;
+      rerender(this, []);
+    }
   }
 
   dispatch(type, payload) {
@@ -1136,7 +1149,7 @@ function renderTable(s) {
   const activePlayers = g.players.filter((p) => p.playing || p.buyIns.length);
   const roster = [...activePlayers].sort((a, b) => (a.status === 'left') - (b.status === 'left') || (a.seat ?? 99) - (b.seat ?? 99));
   const needSeat = s.role === 'player' && me && me.status === 'playing' && me.seat === null;
-  const showTip = isHost && !storage.tipSeen('keepOpen');
+  const showTip = isHost && s.awake === false && g.status === 'live' && !storage.tipSeen('keepOpen');
 
   app.innerHTML = `
   <main class="page page--game">
