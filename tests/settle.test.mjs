@@ -300,3 +300,22 @@ test('group tip: rounded up to a whole unit, never more than was won, ignored if
   apply(g, 'end', { stacks: { [me]: 165, [a]: 165 }, tipPct: 7 }, host);
   assert.equal(g.result.tipPct, 0);
 });
+
+test('one seat per account: a second device on the same account gets the same seat', async () => {
+  const { accountKey } = await import('../js/store.js');
+  const { g } = setup();
+  const avi = await accountKey('user-avi');
+  const first = apply(g, 'join', { key: 'a'.repeat(32), acct: avi, name: 'Avi' }, { pid: null, host: false });
+  const second = apply(g, 'join', { key: 'b'.repeat(32), acct: avi, name: 'Avi 2' }, { pid: null, host: false });
+  assert.equal(second.pid, first.pid);
+  assert.equal(g.players.length, 2);
+  // A guest device with no account still gets its own seat.
+  const guest = apply(g, 'join', { key: 'c'.repeat(32), name: 'Dana' }, { pid: null, host: false });
+  assert.notEqual(guest.pid, first.pid);
+  // The host's own account maps to the host seat.
+  const me = g.players.find((p) => p.id === g.managerId);
+  me.acct = await accountKey('user-yoni');
+  const hostAgain = apply(g, 'join', { key: 'd'.repeat(32), acct: me.acct, name: 'Yoni' }, { pid: null, host: false });
+  assert.equal(hostAgain.pid, g.managerId);
+  assert.ok(g.players.every((p) => p.acct === null || /^[0-9a-f]{32}$/.test(p.acct)));
+});

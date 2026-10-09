@@ -98,6 +98,11 @@ export function mockBackend() {
     async session() {
       return user();
     },
+    // Mock tokens are just the user id; the server checks they exist.
+    async token() {
+      return user()?.id ?? null;
+    },
+    verify: (token) => rpc('verify', { token }),
     onAuth(fn) {
       authCb = fn;
     },

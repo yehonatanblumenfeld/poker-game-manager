@@ -14,6 +14,7 @@ import {
   isSecret,
   TIP_PCTS,
   deviceKey,
+  accountKey,
   cleanName,
   freeSeats,
   player,
@@ -556,9 +557,12 @@ class HostSession {
       },
     });
     // Players only trust the keys saved with the game, so save them first.
-    this.link.ready.then(() => {
+    this.link.ready.then(async () => {
       if (!this.link.anchor) return;
       this.game.keys = this.link.anchor;
+      // The host's own account owns their seat too (older games, takeovers).
+      const me = player(this.game, this.game.managerId);
+      if (me && !me.acct && cloud.user()) me.acct = await accountKey(cloud.user().id);
       storage.saveHosted(this.game);
       cloud.saveGame(this.game, { now: true });
       this.link.broadcast({ t: 'state', game: this.game });
@@ -601,7 +605,9 @@ class HostSession {
       let key;
       try {
         key = await deviceKey(String(msg.clientId || ''));
-        const { pid } = apply(this.game, 'join', { key, name: msg.name }, { pid: null, host: false });
+        const uid = msg.token ? await cloud.verify(msg.token) : null;
+        const acct = uid ? await accountKey(uid) : null;
+        const { pid } = apply(this.game, 'join', { key, acct, name: msg.name }, { pid: null, host: false });
         this.link.bind(sid, pid);
         this.link.send(sid, { t: 'welcome', pid });
         const last = this.game.log[this.game.log.length - 1];
@@ -699,7 +705,7 @@ class PlayerSession {
   connect() {
     if (!cloud.realtime()) return;
     this.link = new PlayerLink(cloud.realtime(), this.secret, {
-      hello: () => ({ clientId: this.ident.clientId, name: this.ident.name }),
+      hello: async () => ({ clientId: this.ident.clientId, name: this.ident.name, token: await cloud.token() }),
       anchor: this.game?.keys,
       trust: () => this.fetchSaved().then((g) => g?.keys),
       onPresence: () => this.game && rerender(this, []),
