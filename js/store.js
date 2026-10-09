@@ -387,6 +387,7 @@ const K = {
   name: 'felt:name',
   history: 'felt:history',
   tips: 'felt:tips',
+  adopted: 'felt:adopted',
 };
 
 function read(key, fallback = null) {
@@ -465,6 +466,20 @@ export const storage = {
     } catch {}
     return out.sort((a, b) => b.game.createdAt - a.game.createdAt);
   },
+
+  // Remove every copy of a game (hosted or joined) from this device.
+  dropGame(id) {
+    const codes = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const m = localStorage.key(i)?.match(/^felt:(game|snap):(\w+)$/);
+        if (m && read(m[0])?.id === id) codes.push(m[2]);
+      }
+    } catch {}
+    codes.forEach((code) => storage.dropLocal(code));
+  },
+  adopted: (userId) => read(K.adopted, []).includes(userId),
+  markAdopted: (userId) => write(K.adopted, [...read(K.adopted, []), userId].slice(-20)),
 
   // Every game on this device, hosted or joined, for adding to an account.
   allLocal() {

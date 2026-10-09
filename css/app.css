@@ -2359,3 +2359,29 @@ span.check {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Names carry their own direction (dir="auto") so a long English name in the
+   Hebrew layout is cut at its end, while still lining up with the page. */
+.seat__name,
+.pcard__name,
+.count-list__name,
+.results__name {
+  text-align: match-parent;
+}
+
+.link-row--btn {
+  width: 100%;
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.steps {
+  margin: 0 0 8px;
+  padding-inline-start: 22px;
+  display: grid;
+  gap: 10px;
+  line-height: 1.5;
+}

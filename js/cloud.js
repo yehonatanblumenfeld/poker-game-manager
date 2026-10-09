@@ -150,10 +150,10 @@ export const cloud = {
   },
 
   // Google sends the user back to the page; `after` is the screen to return to.
-  async signIn(after = location.hash) {
+  async signIn(after = location.pathname + location.hash) {
     if (!client) throw new Error('offline');
     try {
-      sessionStorage.setItem(AFTER_KEY, after || '#/');
+      sessionStorage.setItem(AFTER_KEY, after || '/');
     } catch {}
     const params = new URLSearchParams(location.search);
     params.delete('code');
@@ -327,12 +327,15 @@ export async function initCloud() {
     params.delete('error_code');
     params.delete('error_description');
     const q = params.toString();
-    let after = '#/';
+    let after = location.pathname;
     try {
-      after = sessionStorage.getItem(AFTER_KEY) || '#/';
+      after = sessionStorage.getItem(AFTER_KEY) || after;
       sessionStorage.removeItem(AFTER_KEY);
     } catch {}
-    history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}${after}`);
+    // Only ever return to a path on this site.
+    if (!after.startsWith('/') || after.startsWith('//')) after = '/';
+    const [path, hash] = after.split('#');
+    history.replaceState(null, '', `${path}${q ? `?${q}` : ''}${hash ? `#${hash}` : ''}`);
   }
   readyResolve(user);
   return user;
