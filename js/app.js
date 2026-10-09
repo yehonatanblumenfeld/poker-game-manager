@@ -189,11 +189,16 @@ function openAccount() {
           </div>
         </div>
         <a class="btn btn--lg" href="/history">${esc(t('home.history'))}</a>
+        <a class="btn btn--lg" href="/admin" data-admin hidden>${esc(t('admin.title'))}</a>
         <button class="btn btn--ghost btn--danger-text" data-signout>${esc(t('auth.signOut'))}</button>`;
       b.querySelector('[data-signout]').addEventListener('click', () => {
         cloud.signOut().finally(() => close());
       });
-      b.querySelector('a').addEventListener('click', () => close());
+      b.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => close()));
+      cloud.isAdmin().then((yes) => {
+        const link = b.querySelector('[data-admin]');
+        if (yes && link) link.hidden = false;
+      });
     },
   });
 }
@@ -236,6 +241,7 @@ function route() {
   if (view === 'new') return show(viewNew);
   if (view === 'game' && code.length === CODE_LENGTH) return show(() => viewGame(code, isSecret(secret) ? secret : null));
   if (view === 'history') return show(() => viewStats(arg));
+  if (view === 'admin') return show(viewAdmin);
   return show(viewHome);
 }
 
@@ -2143,6 +2149,159 @@ function viewPastGame(id) {
 }
 
 // ---------------- boot ----------------
+
+// ---------------- admin ----------------
+// The owner's numbers. The server only answers the admin account
+// (admin_stats in supabase/migrations); everyone else gets "not found".
+
+let adminTimer = null;
+
+function bars(values, { labels = [], every = 1, tone = 'brass' } = {}) {
+  const max = Math.max(1, ...values);
+  const w = 100 / values.length;
+  return `<svg class="chart chart--${tone}" viewBox="0 0 100 44" preserveAspectRatio="none" role="img">
+      ${values
+        .map((v, i) => {
+          const h = (v / max) * 40;
+          return `<rect x="${(i * w + w * 0.15).toFixed(2)}" y="${(42 - h).toFixed(2)}" width="${(w * 0.7).toFixed(2)}" height="${Math.max(h, v ? 0.8 : 0.3).toFixed(2)}" rx="0.6"><title>${esc(labels[i] ?? '')}: ${v}</title></rect>`;
+        })
+        .join('')}
+    </svg>
+    <div class="chart__axis" dir="ltr">${labels
+      .map((l, i) => `<span style="width:${w}%">${i % every === 0 ? esc(l) : ''}</span>`)
+      .join('')}</div>`;
+}
+
+function kpi(label, value, sub = '') {
+  return `<div class="kpi"><span class="kpi__label">${esc(label)}</span><strong class="kpi__value">${value}</strong>${sub ? `<span class="kpi__sub">${sub}</span>` : ''}</div>`;
+}
+
+function viewAdmin() {
+  clearInterval(adminTimer);
+  if (!cloud.user()) return renderMissing();
+  renderLoading();
+  const load = () =>
+    cloud
+      .adminStats()
+      .then((d) => location.pathname === '/admin' && renderAdmin(d))
+      .catch(() => {
+        clearInterval(adminTimer);
+        if (location.pathname === '/admin') renderMissing();
+      });
+  load();
+  adminTimer = setInterval(() => (location.pathname === '/admin' ? load() : clearInterval(adminTimer)), 60000);
+}
+
+function renderAdmin(d) {
+  const n = (x) => new Intl.NumberFormat(lang() === 'he' ? 'he-IL' : 'en-US').format(x ?? 0);
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
+  const days = d.daily ?? [];
+  const dayLabels = days.map((x) => x.day.slice(8));
+  const weekdays = lang() === 'he' ? ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'] : ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const sizes = Object.entries(d.sizes ?? {}).sort((a, b) => a[0] - b[0]);
+  const tipRows = Object.entries(d.tips?.by_pct ?? {}).sort((a, b) => a[0] - b[0]);
+  const g = d.games ?? {};
+  const u = d.users ?? {};
+  app.innerHTML = `
+  <main class="page page--admin">
+    <header class="topbar">
+      <a class="icon-btn" href="/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <h1 class="topbar__title">${esc(t('admin.title'))}</h1>
+      <button class="lang-btn" data-refresh>${esc(t('admin.refresh'))}</button>
+      ${langButton()}
+    </header>
+    <p class="hint">${esc(t('admin.updated', { time: clock(new Date(d.generated_at)) }))}</p>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.now'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.liveNow'), n(g.live_now), g.stale_live ? esc(t('admin.stale', { n: g.stale_live })) : '')}
+        ${kpi(t('admin.playersNow'), n((d.live ?? []).reduce((a, x) => a + x.players, 0)))}
+      </div>
+      ${
+        (d.live ?? []).length
+          ? `<ul class="list list--compact">${d.live
+              .map(
+                (x) => `<li class="list-row list-row--static"><span class="list-row__main">
+              <span class="list-row__title">${esc(t('admin.liveRow', { n: x.players }))}</span>
+              <span class="list-row__sub">${esc(t('admin.startedAt', { time: clock(new Date(x.started)) }))} · ${esc(duration(Date.now() - new Date(x.started)))}</span></span>
+              <strong>${money(x.buyin_cents, x.currency)}</strong></li>`,
+              )
+              .join('')}</ul>`
+          : ''
+      }
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.users'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.accounts'), n(u.total), esc(t('admin.newIn', { d1: n(u.d1), d7: n(u.d7), d30: n(u.d30) })))}
+        ${kpi(t('admin.active7'), n(u.active7), pct(u.active7, u.total))}
+        ${kpi(t('admin.hosts'), n(u.hosts), esc(t('admin.returning', { n: n(u.returning_hosts) })))}
+        ${kpi(t('admin.seats'), n(g.seats), esc(t('admin.signedSeats', { p: pct(g.account_seats, g.seats) })))}
+      </div>
+      <h3 class="chart__title">${esc(t('admin.newUsers30'))}</h3>
+      ${bars(days.map((x) => x.users), { labels: dayLabels, every: 5, tone: 'blue' })}
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.games'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.gamesTotal'), n(g.total), esc(t('admin.newIn', { d1: n(g.d1), d7: n(g.d7), d30: n(g.d30) })))}
+        ${kpi(t('admin.ended'), n(g.ended), pct(g.ended, g.total))}
+        ${kpi(t('admin.avgPlayers'), g.avg_players ?? '—')}
+        ${kpi(t('admin.avgLength'), g.avg_minutes ? esc(duration(g.avg_minutes * 60000)) : '—')}
+        ${kpi(t('admin.buyins'), n(g.buyins), g.total ? esc(t('admin.perGame', { n: (g.buyins / g.total).toFixed(1) })) : '')}
+      </div>
+      <h3 class="chart__title">${esc(t('admin.games30'))}</h3>
+      ${bars(days.map((x) => x.games), { labels: dayLabels, every: 5 })}
+      <h3 class="chart__title">${esc(t('admin.players30'))}</h3>
+      ${bars(days.map((x) => x.players), { labels: dayLabels, every: 5, tone: 'green' })}
+      <h3 class="chart__title">${esc(t('admin.byHour'))}</h3>
+      ${bars(d.hours ?? [], { labels: (d.hours ?? []).map((_, h) => String(h)), every: 3 })}
+      <h3 class="chart__title">${esc(t('admin.byDay'))}</h3>
+      ${bars(d.weekdays ?? [], { labels: weekdays })}
+      ${
+        sizes.length
+          ? `<h3 class="chart__title">${esc(t('admin.bySize'))}</h3>${bars(
+              sizes.map((x) => x[1]),
+              { labels: sizes.map((x) => x[0]), tone: 'green' },
+            )}`
+          : ''
+      }
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.money'))}</h2>
+      <ul class="list list--compact">${(d.money ?? [])
+        .map(
+          (x) => `<li class="list-row list-row--static"><span class="list-row__main">
+          <span class="list-row__title">${money(x.buyin_cents, x.currency)}</span>
+          <span class="list-row__sub">${esc(t('admin.moneyRow', { games: n(x.games), avg: money(x.avg_cents, x.currency) }))}</span></span></li>`,
+        )
+        .join('')}</ul>
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.tips'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.tipGames'), n(d.tips?.games), pct(d.tips?.games, g.ended))}
+        ${Object.entries(d.tips?.by_currency ?? {})
+          .map(([cur, c]) => kpi(t('admin.tipTotal', { cur }), money(c, cur)))
+          .join('')}
+      </div>
+      ${
+        tipRows.length
+          ? `<h3 class="chart__title">${esc(t('admin.tipChoice'))}</h3>${bars(
+              tipRows.map((x) => x[1]),
+              { labels: tipRows.map((x) => (Number(x[0]) ? `${x[0]}%` : t('tip.none'))) },
+            )}`
+          : ''
+      }
+    </section>
+  </main>`;
+  app.querySelector('[data-refresh]').addEventListener('click', () => viewAdmin());
+}
 
 initLang();
 upgradeOldUrl();

@@ -119,6 +119,16 @@ function supabaseBackend() {
       if (error) throw error;
       return data || null;
     },
+    async isAdmin() {
+      const { data, error } = await sb.rpc('is_admin');
+      if (error) throw error;
+      return data === true;
+    },
+    async adminStats() {
+      const { data, error } = await sb.rpc('admin_stats');
+      if (error) throw error;
+      return data;
+    },
     async config() {
       const { data, error } = await sb.from('app_config').select('key, value');
       if (error) throw error;
@@ -134,6 +144,7 @@ const pending = new Map(); // game id -> latest row waiting to be saved
 let saveTimer = null;
 let linkTries = new Map();
 let configCache = null;
+let adminCache = null;
 
 export const cloud = {
   ready,
@@ -260,6 +271,19 @@ export const cloud = {
       throw e;
     });
     return configCache;
+  },
+
+  // The owner's admin page. The server decides who that is; this only hides
+  // the link from everyone else.
+  async isAdmin() {
+    if (!client || !user) return false;
+    adminCache ??= { id: user.id, yes: client.isAdmin().catch(() => false) };
+    if (adminCache.id !== user.id) adminCache = { id: user.id, yes: client.isAdmin().catch(() => false) };
+    return adminCache.yes;
+  },
+  async adminStats() {
+    if (!client || !user) throw new Error('signed out');
+    return client.adminStats();
   },
 
   async removeGame(gameId) {

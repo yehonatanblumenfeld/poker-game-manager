@@ -62,6 +62,32 @@ const fns = {
   config(_, user) {
     return user ? { tip_bit_link: 'https://www.bitpay.co.il/app/me/TEST-1234' } : {};
   },
+  isAdmin(_, user) {
+    return user?.id === 'u-yoni';
+  },
+  adminStats(_, user) {
+    if (user?.id !== 'u-yoni') throw new Error('not allowed');
+    const all = [...games.values()];
+    const day = (d) => new Date(d).toISOString().slice(0, 10);
+    const daily = Array.from({ length: 30 }, (_, i) => {
+      const d = day(Date.now() - (29 - i) * 864e5);
+      const gs = all.filter((g) => day(g.created_at) === d);
+      return { day: d, users: i % 5, games: gs.length + (i % 3), players: gs.reduce((n, g) => n + g.state.players.length, 0) + (i % 4) };
+    });
+    const cents = all.reduce((n, g) => n + g.state.players.reduce((m, p) => m + p.buyIns.reduce((k, b) => k + b.cents, 0), 0), 0);
+    return {
+      generated_at: new Date().toISOString(),
+      users: { total: 12, d1: 1, d7: 4, d30: 12, active7: 6, hosts: 3, returning_hosts: 2 },
+      games: { total: all.length, ended: all.filter((g) => g.status === 'ended').length, d1: all.length, d7: all.length, d30: all.length, live_now: all.filter(live).length, stale_live: 0, avg_players: 3.5, avg_minutes: 142, seats: 14, account_seats: 5, buyins: 21 },
+      live: all.filter(live).map((g) => ({ started: g.created_at, updated: g.created_at, currency: g.currency, players: g.state.players.length, buyin_cents: 20000 })),
+      money: [{ currency: 'ILS', games: all.length, buyin_cents: cents, avg_cents: all.length ? Math.round(cents / all.length) : 0 }, { currency: 'USD', games: 1, buyin_cents: 15000, avg_cents: 15000 }],
+      tips: { games: 2, by_pct: { 0: 3, 2: 1, 5: 1 }, by_currency: { ILS: 3500 } },
+      daily,
+      hours: Array.from({ length: 24 }, (_, h) => (h >= 19 && h <= 23 ? h - 17 : h < 2 ? 2 : 0)),
+      weekdays: [1, 0, 1, 2, 5, 3, 1],
+      sizes: { 2: 1, 4: 3, 6: 2 },
+    };
+  },
   // test helper
   dump() {
     return { games: [...games.values()].map((g) => ({ id: g.id, status: g.status, rev: g.rev, host: g.host_id })), members: [...members.values()] };

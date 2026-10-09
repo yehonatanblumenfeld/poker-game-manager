@@ -124,6 +124,8 @@ export function mockBackend() {
     findGame: (code) => rpc('findGame', { code }),
     gameState: (secret) => rpc('gameState', { secret }),
     config: () => rpc('config'),
+    isAdmin: () => rpc('isAdmin'),
+    adminStats: () => rpc('adminStats'),
     realtime: {
       channel: (topic, opts) => new MockChannel(topic, opts),
       removeChannel(ch) {
