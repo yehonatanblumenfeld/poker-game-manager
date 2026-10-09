@@ -6,7 +6,8 @@ English and Hebrew (full right-to-left), mobile first.
 
 ## How it works
 
-- **No server, no database.** The host's browser holds the game and saves it in `localStorage`. Phones talk through two free public MQTT relays at once (EMQX and HiveMQ, over secure WebSockets), so it works on any network, including mobile data. The relays only pass messages along; there's no account and nothing to set up.
+- **The host's phone runs the game.** It holds the game and saves it in `localStorage`. Phones talk through two free public MQTT relays at once (EMQX and HiveMQ, over secure WebSockets), so it works on any network, including mobile data. Messages are end-to-end encrypted with a key derived from the game code.
+- **Accounts on Supabase.** Hosts sign in with Google; players can join as guests or sign in too. While a game runs, the host saves it to Supabase, so it can be resumed on another device and ends up in everyone's history. Signed-in players link themselves to the games they sit in. The schema and row-level security rules are in `supabase/migrations/`. Guests never touch the database.
 - **End-to-end encrypted.** Messages are AES-GCM encrypted with a key derived from the game code, on a topic derived from it too, so the relays only ever see ciphertext.
 - **The host's screen should stay open.** The relay keeps the latest table, so if the host's phone locks, players still see it; buy-ins wait until the host is back. The app asks the phone to keep the screen awake during a game.
 - **Players rejoin as themselves.** Each phone gets a random id in `localStorage`, so reopening the invite puts you back in your seat with your buy-ins. Use the same browser all night (opening the link in WhatsApp's built-in browser and then in Safari counts as two phones).

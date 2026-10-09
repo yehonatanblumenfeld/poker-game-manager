@@ -402,19 +402,41 @@ export const storage = {
     return out.sort((a, b) => b.game.createdAt - a.game.createdAt);
   },
 
+  // Every game on this device, hosted or joined, for adding to an account.
+  allLocal() {
+    const out = { hosted: [], joined: [] };
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        const m = key && key.match(/^felt:(game|snap):(\w+)$/);
+        if (!m) continue;
+        const g = read(key);
+        if (!g?.id) continue;
+        if (m[1] === 'game') out.hosted.push(g);
+        else if (!storage.isHost(m[2])) {
+          const pid = storage.me(m[2])?.pid;
+          if (pid) out.joined.push({ gameId: g.id, pid });
+        }
+      }
+    } catch {}
+    return out;
+  },
+
   history: () => read(K.history, []),
   // One entry per finished game, keyed by game id so re-renders don't duplicate.
   recordResult(game) {
     const res = gameResults(game);
     if (!res) return;
     const list = storage.history().filter((h) => h.id !== game.id);
+    const me = storage.isHost(game.code) ? game.managerId : storage.me(game.code)?.pid ?? null;
     list.unshift({
       id: game.id,
+      me,
       name: game.name,
       currency: game.currency,
       startedAt: game.createdAt,
       endedAt: game.endedAt,
-      rows: res.map((r) => ({ name: r.name, net: r.net, bought: r.bought })),
+      rows: res.map((r) => ({ id: r.id, name: r.name, net: r.net, bought: r.bought })),
     });
     write(K.history, list.slice(0, 200));
   },

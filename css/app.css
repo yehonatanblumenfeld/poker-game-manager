@@ -2055,3 +2055,158 @@ span.check {
 .pay-hint {
   margin: 0 0 12px;
 }
+
+/* ---------------- accounts ---------------- */
+
+.btn--google {
+  width: 100%;
+  background: #fff;
+  color: #1f1f1f;
+  border-color: #fff;
+  font-weight: 500;
+}
+
+.btn--google:active {
+  background: #eee;
+}
+
+.btn--google.btn--sm {
+  width: auto;
+}
+
+.acct {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  cursor: pointer;
+  transition: transform 160ms var(--ease-out);
+}
+
+.acct:active {
+  transform: scale(0.95);
+}
+
+.acct__pic {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.acct__pic--text {
+  display: inline-grid;
+  place-items: center;
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.acct__pic--lg {
+  width: 56px;
+  height: 56px;
+  font-size: 18px;
+}
+
+.topbar--end {
+  gap: 8px;
+}
+
+.gate {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  margin-top: 24px;
+  text-align: center;
+}
+
+.gate .hero__art {
+  width: 120px;
+}
+
+.gate__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.gate__small {
+  font-size: 13px;
+}
+
+.or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.or::before,
+.or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.join-acct {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.join-acct .acct__pic {
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+}
+
+.banner--stack {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.mystats {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.mystats__big {
+  font-size: 30px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mystats__grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 0;
+}
+
+.mystats__grid dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mystats__grid dd {
+  margin: 2px 0 0;
+  font-weight: 500;
+}
+
+@media (max-width: 360px) {
+  .mystats__grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
