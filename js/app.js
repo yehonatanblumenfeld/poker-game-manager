@@ -81,7 +81,60 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-act="account"]')) openAccount();
   if (e.target.closest('[data-act="signin"]')) openSignIn();
   if (e.target.closest('[data-google]')) googleSignIn();
+  if (e.target.closest('[data-act="devtip"]')) openTip();
 });
+
+// ---------------- tip the developer ----------------
+
+// Bit details shown on the tip sheet. Empty = no tip button anywhere.
+const TIP = { bitLink: '', bitPhone: '' };
+
+function tipButton() {
+  if (!TIP.bitLink && !TIP.bitPhone) return '';
+  return `<button type="button" class="link-row link-row--tip" data-act="devtip">${esc(t('tip.button'))}</button>`;
+}
+
+const TIP_PCTS = [1, 2, 5];
+
+// Winners see a tip as a share of what they won, rounded up to a shekel.
+// Bit is shekels only, so other currencies get the plain tip link.
+function tipCard(s, g, myNet) {
+  if ((!TIP.bitLink && !TIP.bitPhone) || !(myNet > 0) || g.currency !== 'ILS') return '';
+  const pct = s.tipPct ?? 2;
+  const amount = (p) => Math.max(1, Math.ceil((myNet * p) / 100 / 100));
+  return `<section class="tipcard section">
+      <p class="tipcard__title">${esc(t('tip.cardTitle'))}</p>
+      <div class="seg seg--sm" role="group" aria-label="${esc(t('tip.title'))}">
+        ${TIP_PCTS.map((p) => `<button class="seg__btn" data-tip-pct="${p}" aria-pressed="${p === pct}"><span class="tipcard__pct" dir="ltr">${p}%</span><bdi class="tipcard__amt">${esc(m(amount(p) * 100, g))}</bdi></button>`).join('')}
+      </div>
+      <button class="btn btn--lg" data-tip-amount="${amount(pct)}">${esc(t('tip.send', { money: m(amount(pct) * 100, g) }))}</button>
+    </section>`;
+}
+
+function openTip(shekels = 0) {
+  sheet({
+    title: t('tip.title'),
+    render: (b) => {
+      b.innerHTML = `
+        <p class="hint">${esc(t('tip.body'))}</p>
+        ${shekels ? `<p class="tip__amount">${esc(t('tip.amount', { money: money(shekels * 100, 'ILS') }))}</p>` : ''}
+        ${TIP.bitPhone ? `<p class="tip__phone" dir="ltr">${esc(TIP.bitPhone)}</p>` : ''}
+        <div class="sheet__actions">
+          ${TIP.bitPhone ? `<button class="btn" data-copy>${ICONS.copy}<span>${esc(t('tip.copy'))}</span></button>` : ''}
+          ${TIP.bitLink ? `<a class="btn btn--primary" href="${esc(TIP.bitLink)}" target="_blank" rel="noopener noreferrer">${esc(t('tip.open'))}</a>` : ''}
+        </div>
+        ${TIP.bitPhone && !TIP.bitLink ? `<p class="hint hint--center">${esc(t('tip.howTo'))}</p>` : ''}`;
+      b.querySelector('[data-copy]')?.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(TIP.bitPhone.replace(/\D/g, ''));
+          toast(t('tip.copied'), { tone: 'good' });
+        } catch {
+          prompt('', TIP.bitPhone);
+        }
+      });
+    },
+  });
+}
 
 // ---------------- account ----------------
 
@@ -233,6 +286,7 @@ function viewHome() {
         : `<p class="hint hint--center">${esc(t('home.empty'))}</p>`
     }
     <a class="link-row" href="#/stats">${esc(t('home.history'))} ${ICONS.arrow}</a>
+    ${tipButton()}
   </main>`;
 
   app.querySelector('[data-form="join"]').addEventListener('submit', (e) => {
@@ -1672,6 +1726,8 @@ function renderResults(s) {
       }
     </section>
 
+    ${tipCard(s, g, myNet)}
+
     <div class="stack stack--tight section">
       <button class="btn btn--primary btn--lg" data-act="share">${ICONS.share}<span>${esc(t('res.share'))}</span></button>
       ${
@@ -1682,8 +1738,18 @@ function renderResults(s) {
           : ''
       }
     </div>
+    ${myNet > 0 && g.currency === 'ILS' ? '' : tipButton()}
   </main>`;
   bindGame(s);
+  app.querySelector('.tipcard')?.addEventListener('click', (e) => {
+    const pct = e.target.closest('[data-tip-pct]');
+    if (pct) {
+      s.tipPct = Number(pct.dataset.tipPct);
+      return renderResults(s);
+    }
+    const send = e.target.closest('[data-tip-amount]');
+    if (send) openTip(Number(send.dataset.tipAmount));
+  });
 }
 
 function potLine(g) {
