@@ -31,6 +31,14 @@ export function cleanName(s) {
     .slice(0, 24);
 }
 
+// Two players with the same name make the settle-up confusing, so names are
+// unique per game (ignoring case and spacing).
+const nameKey = (n) => cleanName(n).toLocaleLowerCase();
+
+function assertFreeName(game, name, exceptId = null) {
+  if (game.players.some((p) => p.id !== exceptId && nameKey(p.name) === nameKey(name))) throw new ActionError('nameTaken');
+}
+
 function nextColor(game) {
   const used = new Set(game.players.map((p) => p.color));
   return COLORS.find((c) => !used.has(c)) ?? COLORS[game.players.length % COLORS.length];
@@ -65,6 +73,9 @@ export function createGame(opts) {
     buyIn: Math.round(opts.buyIn),
     chip: { cents: Math.round(opts.chip.cents), chips: Number(opts.chip.chips) },
     seats: Math.min(10, Math.max(2, opts.seats | 0)),
+    // true: buy-ins are paid in cash into a pot on the table.
+    // false: nobody pays during the game; everyone settles at the end.
+    pot: opts.pot !== false,
     createdAt: now,
     endedAt: null,
     status: 'live',
@@ -116,8 +127,10 @@ export class ActionError extends Error {
   }
 }
 
-const HOST_ONLY = new Set(['addPlayer', 'undoBuyin', 'settleLeave', 'remove', 'end', 'reopen', 'settleMode', 'paid', 'setSeat']);
-const SELF_OK = new Set(['sit', 'buyin', 'leave', 'return', 'rename']);
+const HOST_ONLY = new Set(['addPlayer', 'undoBuyin', 'settleLeave', 'remove', 'end', 'reopen', 'settleMode', 'paid', 'setSeat', 'paidBuyin', 'rename']);
+// Players pick their name once when they join; after that only the host can
+// change it, so nobody shows up under a new name mid-game.
+const SELF_OK = new Set(['sit', 'buyin', 'leave', 'return']);
 
 // Applies an action in place. `actor` is { pid, host }.
 // Returns the log entry (if any) so callers can react to it.
@@ -125,7 +138,7 @@ export function apply(game, type, payload, actor) {
   if (HOST_ONLY.has(type) && !actor.host) throw new ActionError('notAllowed');
   if (SELF_OK.has(type) && !actor.host && payload.pid !== actor.pid) throw new ActionError('notAllowed');
   if (!HOST_ONLY.has(type) && !SELF_OK.has(type) && type !== 'join') throw new ActionError('generic');
-  if (game.status === 'ended' && !['reopen', 'settleMode', 'paid', 'join'].includes(type)) throw new ActionError('ended');
+  if (game.status === 'ended' && !['reopen', 'settleMode', 'paid', 'paidBuyin', 'join'].includes(type)) throw new ActionError('ended');
 
   const find = (id) => {
     const p = game.players.find((x) => x.id === id);
@@ -140,6 +153,7 @@ export function apply(game, type, payload, actor) {
       if (existing) return { pid: existing.id };
       const name = cleanName(payload.name);
       if (!name) throw new ActionError('name');
+      assertFreeName(game, name);
       const p = makePlayer(game, { name, clientId: payload.clientId });
       game.players.push(p);
       log(game, 'join', p.id);
@@ -149,6 +163,7 @@ export function apply(game, type, payload, actor) {
     case 'addPlayer': {
       const name = cleanName(payload.name);
       if (!name) throw new ActionError('name');
+      assertFreeName(game, name);
       const p = makePlayer(game, { name });
       const free = freeSeats(game);
       if (free.length) p.seat = free[0];
@@ -177,10 +192,19 @@ export function apply(game, type, payload, actor) {
       const cents = Math.round(Number(payload.cents));
       if (!(cents > 0) || cents > 100_000_000) throw new ActionError('amount');
       if (game.type === 'fixed' && cents % game.buyIn !== 0) throw new ActionError('amount');
-      const buy = { id: uid(6), cents, chips: chipsForCents(game, cents), at: Date.now(), by: actor.pid };
+      const paid = typeof payload.paid === 'boolean' ? payload.paid : !!game.pot;
+      const buy = { id: uid(6), cents, chips: chipsForCents(game, cents), paid, at: Date.now(), by: actor.pid };
       p.buyIns.push(buy);
       p.playing = true;
       log(game, 'buyin', p.id, { cents, by: actor.pid });
+      break;
+    }
+    case 'paidBuyin': {
+      const p = find(payload.pid);
+      const b = p.buyIns.find((x) => x.id === payload.buyinId);
+      if (!b) throw new ActionError('generic');
+      b.paid = !!payload.value;
+      if (game.result) game.result.paid = {};
       break;
     }
     case 'undoBuyin': {
@@ -226,6 +250,7 @@ export function apply(game, type, payload, actor) {
       const name = cleanName(payload.name);
       if (!name) throw new ActionError('name');
       if (name === p.name) break;
+      assertFreeName(game, name, p.id);
       log(game, 'rename', p.id, { old: p.name, quiet: true });
       p.name = name;
       break;
@@ -247,7 +272,7 @@ export function apply(game, type, payload, actor) {
       }
       game.status = 'ended';
       game.endedAt = Date.now();
-      game.result = { stacks, adjust: !!payload.adjust, mode: 'fewest', paid: {} };
+      game.result = { stacks, adjust: !!payload.adjust, mode: game.pot ? 'pot' : 'fewest', paid: {} };
       log(game, 'end', actor.pid);
       break;
     }
@@ -260,7 +285,7 @@ export function apply(game, type, payload, actor) {
     }
     case 'settleMode': {
       if (!game.result) throw new ActionError('generic');
-      game.result.mode = payload.mode === 'bank' ? 'bank' : 'fewest';
+      game.result.mode = ['pot', 'bank'].includes(payload.mode) ? payload.mode : 'fewest';
       game.result.paid = {};
       break;
     }
