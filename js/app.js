@@ -12,13 +12,14 @@ import {
   normalizeCode,
   CODE_LENGTH,
   isSecret,
+  TIP_PCTS,
   deviceKey,
   cleanName,
   freeSeats,
   player,
   gameResults,
 } from './store.js';
-import { boughtCents, boughtChips, tableTotals, centsForChips, chipsForCents, countCheck, results, transfers, transferKey, POT, potCents, unpaidCents, dueCents, isPaid } from './settle.js';
+import { boughtCents, boughtChips, tableTotals, centsForChips, chipsForCents, countCheck, results, transfers, transferKey, POT, TIP, tipTotal, potCents, unpaidCents, dueCents, isPaid } from './settle.js';
 
 const app = document.getElementById('app');
 let session = null;
@@ -27,7 +28,7 @@ let currentView = () => {};
 // ---------------- helpers ----------------
 
 const m = (cents, g = session?.game, opts) => money(cents, g?.currency ?? 'ILS', opts);
-const nameOf = (g, id) => (id === POT ? t('res.potName') : player(g, id)?.name ?? '—');
+const nameOf = (g, id) => (id === POT ? t('res.potName') : id === TIP ? t('res.tipName') : player(g, id)?.name ?? '—');
 const initials = (name) =>
   name
     .split(' ')
@@ -81,55 +82,57 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-act="account"]')) openAccount();
   if (e.target.closest('[data-act="signin"]')) openSignIn();
   if (e.target.closest('[data-google]')) googleSignIn();
-  if (e.target.closest('[data-act="devtip"]')) openTip();
 });
 
 // ---------------- tip the developer ----------------
 
-// Bit details shown on the tip sheet. Empty = no tip button anywhere.
-const TIP = { bitLink: '', bitPhone: '' };
+// The host can add a group tip for the app's developer when closing a game
+// (see results() in settle.js). The Bit number lives in Supabase settings,
+// readable only when signed in, so it isn't in the code.
+let tipPhone = null;
 
-function tipButton() {
-  if (!TIP.bitLink && !TIP.bitPhone) return '';
-  return `<button type="button" class="link-row link-row--tip" data-act="devtip">${esc(t('tip.button'))}</button>`;
+async function loadTipPhone() {
+  if (tipPhone !== null) return tipPhone;
+  try {
+    const config = await cloud.config();
+    tipPhone = config.tip_bit_phone || '';
+  } catch {
+    return '';
+  }
+  return tipPhone;
 }
 
-const TIP_PCTS = [1, 2, 5];
-
-// Winners see a tip as a share of what they won, rounded up to a shekel.
-// Bit is shekels only, so other currencies get the plain tip link.
-function tipCard(s, g, myNet) {
-  if ((!TIP.bitLink && !TIP.bitPhone) || !(myNet > 0) || g.currency !== 'ILS') return '';
-  const pct = s.tipPct ?? 2;
-  const amount = (p) => Math.max(1, Math.ceil((myNet * p) / 100 / 100));
-  return `<section class="tipcard section">
-      <p class="tipcard__title">${esc(t('tip.cardTitle'))}</p>
-      <div class="seg seg--sm" role="group" aria-label="${esc(t('tip.title'))}">
-        ${TIP_PCTS.map((p) => `<button class="seg__btn" data-tip-pct="${p}" aria-pressed="${p === pct}"><span class="tipcard__pct" dir="ltr">${p}%</span><bdi class="tipcard__amt">${esc(m(amount(p) * 100, g))}</bdi></button>`).join('')}
+function tipChooser(g, pct) {
+  return `<div class="tip-choose">
+      <p class="tip-choose__label">${esc(t('tip.choose'))}<small>${esc(t('tip.chooseHint'))}</small></p>
+      <div class="seg seg--sm" role="radiogroup" aria-label="${esc(t('tip.title'))}">
+        ${TIP_PCTS.map(
+          (p) => `<button type="button" class="seg__btn" data-tip-pct="${p}" aria-pressed="${p === pct}">${
+            p ? `<span dir="ltr">${p}%</span><bdi class="seg__sub">${esc(m(tipTotal(g, p), g))}</bdi>` : esc(t('tip.none'))
+          }</button>`,
+        ).join('')}
       </div>
-      <button class="btn btn--lg" data-tip-amount="${amount(pct)}">${esc(t('tip.send', { money: m(amount(pct) * 100, g) }))}</button>
-    </section>`;
+    </div>`;
 }
 
-function openTip(shekels = 0) {
+function openTip(g, cents) {
   sheet({
     title: t('tip.title'),
     render: (b) => {
       b.innerHTML = `
         <p class="hint">${esc(t('tip.body'))}</p>
-        ${shekels ? `<p class="tip__amount">${esc(t('tip.amount', { money: money(shekels * 100, 'ILS') }))}</p>` : ''}
-        ${TIP.bitPhone ? `<p class="tip__phone" dir="ltr">${esc(TIP.bitPhone)}</p>` : ''}
+        <p class="tip__amount">${esc(t('tip.amount', { money: m(cents, g) }))}</p>
+        <p class="tip__phone" dir="ltr">${esc(tipPhone || '')}</p>
         <div class="sheet__actions">
-          ${TIP.bitPhone ? `<button class="btn" data-copy>${ICONS.copy}<span>${esc(t('tip.copy'))}</span></button>` : ''}
-          ${TIP.bitLink ? `<a class="btn btn--primary" href="${esc(TIP.bitLink)}" target="_blank" rel="noopener noreferrer">${esc(t('tip.open'))}</a>` : ''}
+          <button class="btn btn--primary" data-copy>${ICONS.copy}<span>${esc(t('tip.copy'))}</span></button>
         </div>
-        ${TIP.bitPhone && !TIP.bitLink ? `<p class="hint hint--center">${esc(t('tip.howTo'))}</p>` : ''}`;
-      b.querySelector('[data-copy]')?.addEventListener('click', async () => {
+        <p class="hint hint--center">${esc(t('tip.howTo'))}</p>`;
+      b.querySelector('[data-copy]').addEventListener('click', async () => {
         try {
-          await navigator.clipboard.writeText(TIP.bitPhone.replace(/\D/g, ''));
+          await navigator.clipboard.writeText(tipPhone.replace(/\D/g, ''));
           toast(t('tip.copied'), { tone: 'good' });
         } catch {
-          prompt('', TIP.bitPhone);
+          prompt('', tipPhone);
         }
       });
     },
@@ -286,7 +289,6 @@ function viewHome() {
         : `<p class="hint hint--center">${esc(t('home.empty'))}</p>`
     }
     <a class="link-row" href="#/stats">${esc(t('home.history'))} ${ICONS.arrow}</a>
-    ${tipButton()}
   </main>`;
 
   app.querySelector('[data-form="join"]').addEventListener('submit', (e) => {
@@ -1587,7 +1589,23 @@ function openEnd(s) {
         <div class="tally-bar" data-tally aria-live="polite"></div>
         <label class="switch" data-adjust-wrap hidden><input type="checkbox" name="adjust"/><span class="switch__track" aria-hidden="true"></span>
           <span>${esc(t('end.adjust'))}<small>${esc(t('end.adjustHint'))}</small></span></label>
+        <div data-tip-wrap hidden></div>
         <button class="btn btn--primary btn--lg" data-confirm>${esc(t('end.confirm'))}</button>`;
+      let tipPct = 0;
+      const tipWrap = b.querySelector('[data-tip-wrap]');
+      // Offered only when a Bit number is set up (and the host is signed in).
+      loadTipPhone().then((phone) => {
+        if (!phone || !tipWrap.isConnected) return;
+        tipWrap.innerHTML = tipChooser(g, tipPct);
+        tipWrap.hidden = false;
+      });
+      tipWrap.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-tip-pct]');
+        if (!btn) return;
+        tipPct = Number(btn.dataset.tipPct);
+        tipWrap.querySelectorAll('[data-tip-pct]').forEach((x) => x.setAttribute('aria-pressed', String(x === btn)));
+        sync();
+      });
 
       const sync = () => {
         b.querySelectorAll('[data-stack]').forEach((inp) => {
@@ -1596,7 +1614,7 @@ function openEnd(s) {
         });
         const adjust = b.querySelector('[name="adjust"]').checked;
         const check = countCheck(g, stacks);
-        const res = results(g, stacks, { adjust });
+        const res = results(g, stacks, { adjust, tipPct });
         for (const r of res) {
           const el = b.querySelector(`[data-net="${r.id}"]`);
           if (el) {
@@ -1620,7 +1638,7 @@ function openEnd(s) {
       b.querySelector('[data-confirm]').addEventListener('click', (e) => {
         if (e.currentTarget.disabled) return;
         sync();
-        s.dispatch('end', { stacks: { ...stacks }, adjust: b.querySelector('[name="adjust"]').checked }).then(() => closeSheet());
+        s.dispatch('end', { stacks: { ...stacks }, adjust: b.querySelector('[name="adjust"]').checked, tipPct }).then(() => closeSheet());
       });
       sync();
     },
@@ -1638,6 +1656,7 @@ function renderResults(s) {
   const me = s.me;
   const myNet = res.find((r) => r.id === me)?.net;
   const mine = list.filter((x) => x.from === me || x.to === me);
+  const tipCents = res.reduce((sum, r) => sum + (r.tip || 0), 0);
   // The reveal plays once, not on every paid-tick re-render.
   const reveal = s.revealed !== g.id;
   s.revealed = g.id;
@@ -1726,7 +1745,10 @@ function renderResults(s) {
       }
     </section>
 
-    ${tipCard(s, g, myNet)}
+    ${isHost && tipCents ? `<section class="tipcard section">
+      <p class="tipcard__title">${esc(t('tip.hostTitle', { money: m(tipCents, g), pct: g.result.tipPct }))}</p>
+      <button class="btn btn--lg" data-act="sendtip">${esc(t('tip.send'))}</button>
+    </section>` : ''}
 
     <div class="stack stack--tight section">
       <button class="btn btn--primary btn--lg" data-act="share">${ICONS.share}<span>${esc(t('res.share'))}</span></button>
@@ -1738,17 +1760,11 @@ function renderResults(s) {
           : ''
       }
     </div>
-    ${myNet > 0 && g.currency === 'ILS' ? '' : tipButton()}
   </main>`;
   bindGame(s);
-  app.querySelector('.tipcard')?.addEventListener('click', (e) => {
-    const pct = e.target.closest('[data-tip-pct]');
-    if (pct) {
-      s.tipPct = Number(pct.dataset.tipPct);
-      return renderResults(s);
-    }
-    const send = e.target.closest('[data-tip-amount]');
-    if (send) openTip(Number(send.dataset.tipAmount));
+  app.querySelector('[data-act="sendtip"]')?.addEventListener('click', async () => {
+    if (await loadTipPhone()) openTip(g, tipCents);
+    else toast(t('auth.unavailable'), { tone: 'error' });
   });
 }
 
@@ -1760,6 +1776,7 @@ function potLine(g) {
 
 // One line of the viewer's own settle-up.
 function myLine(g, x, me) {
+  if (x.to === TIP) return t('you.tipSend', { money: m(x.cents, g) });
   if (x.to === POT) return t('you.potPut', { money: m(x.cents, g) });
   if (x.from === POT) return t('you.potTake', { money: m(x.cents, g) });
   return x.from === me ? t('you.pay', { name: nameOf(g, x.to), money: m(x.cents, g) }) : t('you.get', { name: nameOf(g, x.from), money: m(x.cents, g) });

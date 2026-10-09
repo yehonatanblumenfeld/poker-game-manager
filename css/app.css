@@ -931,17 +931,6 @@ select.input {
   text-decoration: none;
 }
 
-.link-row--tip {
-  width: 100%;
-  margin-top: 8px;
-  border: 0;
-  background: none;
-  font: inherit;
-  font-size: 14px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
 .tipcard {
   display: grid;
   gap: 12px;
@@ -956,12 +945,28 @@ select.input {
   color: var(--text-2);
 }
 
-.tipcard .seg__btn {
+.tip-choose {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 14px;
+}
+.tip-choose__label {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+  font-weight: 500;
+}
+.tip-choose__label small {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 13px;
+}
+.tip-choose .seg__btn {
   display: grid;
   gap: 2px;
   justify-items: center;
 }
-.tipcard__amt {
+.seg__sub {
   font-size: 12px;
   opacity: 0.75;
 }

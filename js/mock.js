@@ -118,6 +118,7 @@ export function mockBackend() {
     remove: (gameId) => rpc('remove', { gameId }),
     findGame: (code) => rpc('findGame', { code }),
     gameState: (secret) => rpc('gameState', { secret }),
+    config: () => rpc('config'),
     realtime: {
       channel: (topic, opts) => new MockChannel(topic, opts),
       removeChannel(ch) {

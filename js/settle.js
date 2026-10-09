@@ -66,7 +66,11 @@ export function countCheck(game, stacks) {
 // Per-player results. With `adjust`, stacks still on the table are scaled so the
 // counted total matches the chips that were bought (players who already left
 // keep what they reported, since they've been told their number).
-export function results(game, stacks, { adjust = false } = {}) {
+//
+// With `tipPct`, a group tip for the app's developer (that share of the
+// buy-ins, rounded up to a whole unit) comes out of the winners' profits in
+// proportion to what each won, like a rake. It is never more than they won.
+export function results(game, stacks, { adjust = false, tipPct = 0 } = {}) {
   const fs = finalStacks(game, stacks);
   const ids = Object.keys(fs);
   if (adjust) {
@@ -85,17 +89,31 @@ export function results(game, stacks, { adjust = false } = {}) {
   const balanced = Math.abs(countCheck(game, stacks).diff) < 1e-9 || adjust;
   const target = balanced ? 0 : Math.round(raw.reduce((a, b) => a + b, 0));
   const nets = roundToTotal(raw, target);
+  const won = nets.reduce((sum, n) => sum + Math.max(0, n), 0);
+  const tip = Math.min(tipTotal(game, tipPct), won);
+  const cut = tip ? roundToTotal(nets.map((n) => (n > 0 ? (n * tip) / won : 0)), tip) : nets.map(() => 0);
   return ids.map((id, i) => {
     const p = game.players.find((x) => x.id === id);
+    const net = nets[i] - cut[i];
     return {
       id,
       name: p.name,
       bought: boughtCents(p),
       chips: fs[id],
-      cashOut: boughtCents(p) + nets[i],
-      net: nets[i],
+      cashOut: boughtCents(p) + net,
+      net,
+      tip: cut[i],
     };
   });
+}
+
+// ---------------- developer tip ----------------
+
+export const TIP = 'tip';
+
+export function tipTotal(game, pct) {
+  if (!(pct > 0)) return 0;
+  return Math.ceil((tableTotals(game).cents * pct) / 100 / 100) * 100;
 }
 
 // ---------------- the pot ----------------
@@ -136,6 +154,8 @@ export function dueCents(game, player, cashOut) {
 //   bank:   everyone settles with the host, who holds the pot cash.
 // Players marked settledOnLeave already squared up when they left (with the
 // pot, or with the host in a game without one), so their balance moves there.
+//
+// A developer tip is collected by the host, who sends it on (one last line).
 export function transfers(game, res, mode = 'fewest') {
   const managerId = game.managerId;
   const bal = new Map();
@@ -144,6 +164,9 @@ export function transfers(game, res, mode = 'fewest') {
     bal.set(r.id, dueCents(game, p, r.cashOut));
   }
   bal.set(POT, -potCents(game));
+  const tip = res.reduce((sum, r) => sum + (r.tip || 0), 0);
+  if (tip) bal.set(managerId, (bal.get(managerId) ?? 0) + tip);
+  const tipLine = tip ? [{ from: managerId, to: TIP, cents: tip }] : [];
 
   const early = game.pot ? POT : managerId;
   const settled = [];
@@ -171,7 +194,7 @@ export function transfers(game, res, mode = 'fewest') {
     }
     // Money in first, then pay-outs, biggest first.
     list.sort((a, b) => (b.to === hub) - (a.to === hub) || b.cents - a.cents);
-    return [...settled, ...list];
+    return [...settled, ...list, ...tipLine];
   }
 
   const debtors = [];
@@ -194,7 +217,7 @@ export function transfers(game, res, mode = 'fewest') {
     if (debtors[i].left === 0) i++;
     if (creditors[j].left === 0) j++;
   }
-  return [...settled, ...list];
+  return [...settled, ...list, ...tipLine];
 }
 
 export function transferKey(t) {

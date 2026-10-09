@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
-const { createGame, apply } = await import('../js/store.js');
-const { results, transfers, countCheck, roundToTotal, tableTotals, potCents, POT } = await import('../js/settle.js');
+const { createGame, apply, gameResults } = await import('../js/store.js');
+const { results, transfers, countCheck, roundToTotal, tableTotals, potCents, POT, TIP } = await import('../js/settle.js');
 
 const host = { pid: null, host: true };
 
@@ -258,4 +258,45 @@ test('device keys are hashes, and codes and secrets have enough entropy', async 
   const sec = newSecret();
   assert.ok(isSecret(sec) && sec.length === 22);
   assert.notEqual(sec, newSecret());
+});
+
+test('group tip: comes out of the winners by what they won, and the host sends it on', () => {
+  const { g, add, me } = setup({ pot: true });
+  const a = add('Avi');
+  const d = add('Dana');
+  const e = add('Eli');
+  for (const id of [me, a, d, e]) apply(g, 'buyin', { pid: id, cents: 10000 }, host);
+  // 400 in, 2% tip = 8. Avi is up 150, Eli up 50: they give 6 and 2.
+  apply(g, 'end', { stacks: { [me]: 0, [a]: 1250, [d]: 0, [e]: 750 }, tipPct: 2 }, host);
+  assert.equal(g.result.tipPct, 2);
+  const res = gameResults(g);
+  const by = Object.fromEntries(res.map((r) => [r.id, r]));
+  assert.equal(by[a].net, 15000 - 600);
+  assert.equal(by[e].net, 5000 - 200);
+  assert.equal(by[me].net, -10000);
+  assert.equal(by[d].net, -10000);
+  assert.equal(res.reduce((s, r) => s + r.net, 0), -800);
+  for (const mode of ['pot', 'fewest', 'bank']) {
+    const tx = transfers(g, res, mode);
+    assert.deepEqual(tx.at(-1), { from: me, to: TIP, cents: 800 }, mode);
+    // Everyone ends square, the tip leaves through the host.
+    // (In bank mode the host also holds the pot's cash, so skip them there.)
+    for (const id of mode === 'bank' ? [a, d, e] : [me, a, d, e]) {
+      const r = by[id];
+      const p = g.players.find((x) => x.id === id);
+      const paidIn = p.buyIns.reduce((s, b) => s + b.cents, 0);
+      assert.equal(sumBy(tx, id) - paidIn, r.net, `${mode} ${r.name}`);
+    }
+  }
+});
+
+test('group tip: rounded up to a whole unit, never more than was won, ignored if not offered', () => {
+  const { g, add, me } = setup({ buyIn: 3300 });
+  const a = add('Avi');
+  for (const id of [me, a]) apply(g, 'buyin', { pid: id, cents: 3300 }, host);
+  // 66 in, 5% = 3.30, rounded up to 4. Avi only won 0.20.
+  const res = results(g, { [me]: 164, [a]: 166 }, { tipPct: 5 });
+  assert.equal(res.find((r) => r.id === a).tip, 20);
+  apply(g, 'end', { stacks: { [me]: 165, [a]: 165 }, tipPct: 7 }, host);
+  assert.equal(g.result.tipPct, 0);
 });

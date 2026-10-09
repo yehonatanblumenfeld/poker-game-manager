@@ -152,6 +152,9 @@ export class ActionError extends Error {
   }
 }
 
+// Group tip options for the app's developer, as a share of the buy-ins.
+export const TIP_PCTS = [0, 1, 2, 5];
+
 const HOST_ONLY = new Set(['addPlayer', 'undoBuyin', 'settleLeave', 'remove', 'end', 'reopen', 'settleMode', 'paid', 'setSeat', 'paidBuyin', 'rename']);
 // Players pick their name once when they join; after that only the host can
 // change it, so nobody shows up under a new name mid-game.
@@ -299,7 +302,8 @@ export function apply(game, type, payload, actor) {
       }
       game.status = 'ended';
       game.endedAt = Date.now();
-      game.result = { stacks, adjust: !!payload.adjust, mode: game.pot ? 'pot' : 'fewest', paid: {} };
+      const tipPct = TIP_PCTS.includes(Number(payload.tipPct)) ? Number(payload.tipPct) : 0;
+      game.result = { stacks, adjust: !!payload.adjust, mode: game.pot ? 'pot' : 'fewest', paid: {}, tipPct };
       log(game, 'end', actor.pid);
       break;
     }
@@ -344,7 +348,7 @@ export function player(game, id) {
 
 export function gameResults(game) {
   if (!game.result) return null;
-  return results(game, game.result.stacks, { adjust: game.result.adjust });
+  return results(game, game.result.stacks, { adjust: game.result.adjust, tipPct: game.result.tipPct || 0 });
 }
 
 // ---------- persistence ----------
