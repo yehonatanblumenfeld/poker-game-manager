@@ -868,6 +868,22 @@ select.input {
   transition: background-color 160ms ease;
 }
 
+.list-item {
+  display: flex;
+  align-items: center;
+}
+
+.list-item > .list-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item__del {
+  flex: none;
+  margin-inline-end: 6px;
+  color: var(--muted);
+}
+
 .list-row--static {
   cursor: default;
 }

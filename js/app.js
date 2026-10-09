@@ -271,13 +271,13 @@ function viewHome() {
           ${open
             .map(
               ({ role, game }) => `
-            <li><a class="list-row" href="#/g/${game.code}">
+            <li class="list-item"><a class="list-row" href="#/g/${game.code}">
               <span class="list-row__main">
                 <span class="list-row__title">${esc(game.name)}</span>
                 <span class="list-row__sub">${esc(role === 'host' ? t('home.hosting') : t('home.playing'))} · <span dir="ltr">${game.code}</span> · ${esc(clock(game.createdAt))}</span>
               </span>
               <span class="list-row__end">${m(tableTotals(game).cents, game)} ${ICONS.arrow}</span>
-            </a></li>`,
+            </a><button class="icon-btn list-item__del" data-drop="${esc(game.code)}" aria-label="${esc(t('home.remove'))}">${ICONS.close}</button></li>`,
             )
             .join('')}
         </ul>
@@ -286,6 +286,15 @@ function viewHome() {
     }
     <a class="link-row" href="#/stats">${esc(t('home.history'))} ${ICONS.arrow}</a>
   </main>`;
+
+  app.querySelectorAll('[data-drop]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const code = btn.dataset.drop;
+      if (!confirm(t(storage.isHost(code) ? 'home.removeHostConfirm' : 'home.removeConfirm'))) return;
+      storage.dropLocal(code);
+      viewHome();
+    }),
+  );
 
   app.querySelector('[data-form="join"]').addEventListener('submit', (e) => {
     e.preventDefault();
