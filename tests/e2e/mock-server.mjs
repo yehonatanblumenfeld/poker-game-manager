@@ -60,7 +60,7 @@ const fns = {
     return /^u-[a-z]+$/.test(String(token)) ? { id: token, pic: `https://lh3.googleusercontent.com/a/${token}=s96-c` } : null;
   },
   config(_, user) {
-    return user ? { tip_bit_phone: '050-000-0000', tip_bit_link: 'https://www.bitpay.co.il/app/me/TEST-1234' } : {};
+    return user ? { tip_bit_link: 'https://www.bitpay.co.il/app/me/TEST-1234' } : {};
   },
   // test helper
   dump() {

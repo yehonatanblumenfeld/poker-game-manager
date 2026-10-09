@@ -979,15 +979,6 @@ select.input {
   color: var(--brass);
 }
 
-.tip__phone {
-  margin: 4px 0 16px;
-  text-align: center;
-  font-size: 26px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  font-variant-numeric: tabular-nums;
-}
-
 .mini-list {
   list-style: none;
   margin: 0 0 18px;
