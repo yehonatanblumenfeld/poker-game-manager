@@ -1,4 +1,4 @@
-# Felt · home poker manager
+# Chipper · home poker manager
 
 Run a home poker night from your phone. Open a table, send the invite, and everyone joins from their own phone with no sign-up. The app tracks buy-ins and cash-outs, and when the night ends it works out who pays whom.
 

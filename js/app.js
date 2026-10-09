@@ -196,8 +196,7 @@ function viewHome() {
       ${langButton()}
     </header>
     <section class="hero">
-      ${heroArt()}
-      <h1 class="wordmark">Felt</h1>
+      ${wordmark()}
       <p class="hero__tag">${esc(t('app.tagline'))}</p>
     </section>
     <div class="stack stack--tight">
@@ -242,6 +241,18 @@ function viewHome() {
     if (code.length === CODE_LENGTH) location.hash = fromLink?.[2] ? `#/g/${code}/${fromLink[2]}` : `#/g/${code}`;
     else e.target.code.focus();
   });
+}
+
+// The Chipper wordmark: a poker chip bent into the C, and a small chip for
+// the dot on the i. Always laid out left to right, even in Hebrew.
+function wordmark() {
+  return `<h1 class="wordmark" dir="ltr" aria-label="Chipper">
+    <svg class="wordmark__c" viewBox="0 0 100 100" aria-hidden="true">
+      <path d="M75.46 24.54A36 36 0 1 0 75.46 75.46" class="chip-c"/>
+      <path d="M75.46 24.54A36 36 0 1 0 75.46 75.46" class="chip-c__marks"/>
+      <path d="M69.09 30.91A27 27 0 1 0 69.09 69.09" class="chip-c__inlay"/>
+    </svg><span aria-hidden="true">h<span class="wordmark__i">\u0131<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/><circle cx="50" cy="50" r="38"/></svg></span>pper</span>
+  </h1>`;
 }
 
 function heroArt() {
@@ -1405,7 +1416,7 @@ function openInvite(s) {
         }
       });
       b.querySelector('[data-share]')?.addEventListener('click', () => {
-        navigator.share({ title: 'Felt', text: t('invite.shareText', { name: s.game.name }), url }).catch(() => {});
+        navigator.share({ title: 'Chipper', text: t('invite.shareText', { name: s.game.name }), url }).catch(() => {});
       });
     },
   });

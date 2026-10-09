@@ -1,4 +1,4 @@
-/* Felt: home poker manager. Mobile first, dark by design (it's played at night). */
+/* Chipper: home poker manager. Mobile first, dark by design (it's played at night). */
 
 :root {
   color-scheme: dark;
@@ -24,6 +24,9 @@
   --rail-hi: #4a3423;
   --rail: #2b1d13;
   --rail-lo: #170f09;
+
+  --chip-red: #c4473b;
+  --chip-ivory: #f6f1e4;
 
   --pos: #82d6a0;
   --neg: #f28e78;
@@ -233,6 +236,59 @@ p {
   letter-spacing: -0.02em;
   color: var(--text);
   font-variation-settings: 'SOFT' 100, 'WONK' 1;
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: baseline;
+}
+.wordmark__c {
+  width: 0.9em;
+  height: 0.9em;
+  align-self: center;
+  flex: none;
+  margin-inline-end: -0.03em;
+  position: relative;
+  top: 0.05em;
+}
+.wordmark__c path {
+  fill: none;
+  stroke-width: 24;
+}
+.wordmark__c .chip-c {
+  stroke: var(--chip-red);
+}
+/* Edge marks: six evenly spaced inserts along the 270° arc. */
+.wordmark__c .chip-c__marks {
+  stroke: var(--chip-ivory);
+  stroke-dasharray: 9 19.27;
+  stroke-dashoffset: 18.64;
+}
+.wordmark__c .chip-c__inlay {
+  stroke: var(--chip-ivory);
+  stroke-opacity: 0.55;
+  stroke-width: 1.8;
+  stroke-dasharray: 3 3;
+}
+.wordmark__i {
+  position: relative;
+}
+.wordmark__i svg {
+  position: absolute;
+  width: 0.26em;
+  height: 0.26em;
+  left: 50%;
+  top: 0.02em;
+  transform: translateX(-30%);
+}
+.wordmark__i circle:first-child {
+  fill: var(--chip-red);
+}
+.wordmark__i circle:last-child {
+  fill: none;
+  stroke: var(--chip-ivory);
+  stroke-width: 14;
+  stroke-dasharray: 12 17.8;
 }
 
 .wordmark--sm {
