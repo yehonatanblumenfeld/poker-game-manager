@@ -87,19 +87,22 @@ document.addEventListener('click', (e) => {
 // ---------------- tip the developer ----------------
 
 // The host can add a group tip for the app's developer when closing a game
-// (see results() in settle.js). The Bit number lives in Supabase settings,
+// (see results() in settle.js). The Bit details live in Supabase settings,
 // readable only when signed in, so it isn't in the code.
-let tipPhone = null;
+let tip = null; // { phone, link }
 
-async function loadTipPhone() {
-  if (tipPhone !== null) return tipPhone;
+// Only Bit's own payment pages are opened.
+const BIT_LINK = /^https:\/\/www\.bitpay\.co\.il\/app\/me\/[A-Za-z0-9-]+$/;
+
+async function loadTip() {
+  if (tip) return tip;
   try {
     const config = await cloud.config();
-    tipPhone = config.tip_bit_phone || '';
+    tip = { phone: config.tip_bit_phone || '', link: BIT_LINK.test(config.tip_bit_link || '') ? config.tip_bit_link : '' };
   } catch {
-    return '';
+    return { phone: '', link: '' };
   }
-  return tipPhone;
+  return tip;
 }
 
 function tipChooser(g, pct) {
@@ -122,17 +125,18 @@ function openTip(g, cents) {
       b.innerHTML = `
         <p class="hint">${esc(t('tip.body'))}</p>
         <p class="tip__amount">${esc(t('tip.amount', { money: m(cents, g) }))}</p>
-        <p class="tip__phone" dir="ltr">${esc(tipPhone || '')}</p>
+        ${tip.link ? '' : `<p class="tip__phone" dir="ltr">${esc(tip.phone)}</p>`}
         <div class="sheet__actions">
-          <button class="btn btn--primary" data-copy>${ICONS.copy}<span>${esc(t('tip.copy'))}</span></button>
+          ${tip.link ? `<a class="btn btn--primary" href="${esc(tip.link)}" target="_blank" rel="noopener noreferrer">${esc(t('tip.open'))}</a>` : ''}
+          ${tip.phone ? `<button class="btn ${tip.link ? '' : 'btn--primary'}" data-copy>${ICONS.copy}<span>${esc(t('tip.copy'))}</span></button>` : ''}
         </div>
-        <p class="hint hint--center">${esc(t('tip.howTo'))}</p>`;
-      b.querySelector('[data-copy]').addEventListener('click', async () => {
+        <p class="hint hint--center">${esc(t(tip.link ? 'tip.howToLink' : 'tip.howTo'))}</p>`;
+      b.querySelector('[data-copy]')?.addEventListener('click', async () => {
         try {
-          await navigator.clipboard.writeText(tipPhone.replace(/\D/g, ''));
+          await navigator.clipboard.writeText(tip.phone.replace(/\D/g, ''));
           toast(t('tip.copied'), { tone: 'good' });
         } catch {
-          prompt('', tipPhone);
+          prompt('', tip.phone);
         }
       });
     },
@@ -1594,8 +1598,8 @@ function openEnd(s) {
       let tipPct = 0;
       const tipWrap = b.querySelector('[data-tip-wrap]');
       // Offered only when a Bit number is set up (and the host is signed in).
-      loadTipPhone().then((phone) => {
-        if (!phone || !tipWrap.isConnected) return;
+      loadTip().then(({ phone, link }) => {
+        if (!(phone || link) || !tipWrap.isConnected) return;
         tipWrap.innerHTML = tipChooser(g, tipPct);
         tipWrap.hidden = false;
       });
@@ -1763,7 +1767,8 @@ function renderResults(s) {
   </main>`;
   bindGame(s);
   app.querySelector('[data-act="sendtip"]')?.addEventListener('click', async () => {
-    if (await loadTipPhone()) openTip(g, tipCents);
+    const { phone, link } = await loadTip();
+    if (phone || link) openTip(g, tipCents);
     else toast(t('auth.unavailable'), { tone: 'error' });
   });
 }
