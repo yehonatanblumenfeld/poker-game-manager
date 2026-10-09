@@ -162,10 +162,18 @@ function center(el) {
 function chipsToPot(from, pot, color) {
   if (!from || !pot) return 0;
   const a = center(from);
-  const b = center(pot);
+  // They land on the felt next to the amount (above it from the far side of
+  // the table, below it from the near side), never on top of it.
+  const r = pot.getBoundingClientRect();
+  const above = a.y < r.top + r.height / 2;
+  const b = { x: r.left + r.width / 2, y: above ? r.top - 14 : r.bottom + 16 };
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const lift = Math.min(90, Math.hypot(dx, dy) * 0.35);
+  // A small arc, kept on the chips' side of the amount the whole way.
+  const lift = Math.min(70, Math.hypot(dx, dy) * 0.3);
+  const midY = above ? Math.min(a.y + dy * 0.5 - lift, r.top - 6) : Math.max(a.y + dy * 0.5 - lift, r.bottom + 6);
+  const mx = dx * 0.45;
+  const my = midY - a.y;
   const n = 3;
   for (let i = 0; i < n; i++) {
     const chip = document.createElement('span');
@@ -178,12 +186,17 @@ function chipsToPot(from, pot, color) {
     const anim = chip.animate(
       [
         { transform: 'translate(-50%, -50%) scale(0.9)', opacity: 0 },
-        { transform: `translate(calc(-50% + ${dx * 0.5 + jitter}px), calc(-50% + ${dy * 0.5 - lift}px)) scale(1)`, opacity: 1, offset: 0.5 },
+        { transform: `translate(calc(-50% + ${mx + jitter}px), calc(-50% + ${my}px)) scale(1)`, opacity: 1, offset: 0.5 },
         { transform: `translate(calc(-50% + ${dx + jitter}px), calc(-50% + ${dy + i * -3}px)) scale(0.85)`, opacity: 1 },
       ],
       { duration: 560, delay: i * 70, easing: EASE_IN_OUT, fill: 'backwards' },
     );
-    anim.onfinish = anim.oncancel = () => chip.remove();
+    anim.oncancel = () => chip.remove();
+    // A moment on the felt, then they're part of the pot.
+    anim.onfinish = () => {
+      const out = chip.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, delay: 160, easing: 'ease', fill: 'forwards' });
+      out.onfinish = out.oncancel = () => chip.remove();
+    };
   }
   return 560 + (n - 1) * 70;
 }
@@ -263,7 +276,7 @@ export function playMoves(root, game, entries, format) {
         const p = game.players.find((x) => x.id === e.pid);
         // Their seat, or their row in the list if they aren't seated.
         const seat = root.querySelector(`[data-seat-pid="${e.pid}"] .avatar`) || root.querySelector(`[data-pid="${e.pid}"] .avatar`);
-        landed = Math.max(landed, chipsToPot(seat, potEl, p?.color || 'gold'));
+        landed = Math.max(landed, chipsToPot(seat, root.querySelector('.pot') || potEl, p?.color || 'gold'));
       }
       const added = buyins.reduce((n, e) => n + (e.cents || 0), 0);
       const now = Number(potEl?.dataset.cents);
