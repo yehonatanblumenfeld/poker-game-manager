@@ -351,3 +351,18 @@ test('one seat per account: a device that joined as a guest and signs in later m
   assert.ok(g.players.some((p) => p.id === b.pid));
   assert.equal(g.players.find((p) => p.id === b.pid).acct, null);
 });
+
+test('a player move sent twice (it waited for the host) counts once', () => {
+  const { g, add } = setup();
+  const a = add('Avi');
+  const player = { pid: a, host: false };
+  apply(g, 'buyin', { pid: a, cents: 10000, qid: 'q1abcdef' }, player);
+  apply(g, 'buyin', { pid: a, cents: 10000, qid: 'q1abcdef' }, player);
+  assert.equal(g.players.find((p) => p.id === a).buyIns.length, 1);
+  apply(g, 'buyin', { pid: a, cents: 10000, qid: 'q2abcdef' }, player);
+  assert.equal(g.players.find((p) => p.id === a).buyIns.length, 2);
+  // A move that was refused isn't remembered, so it can be fixed and sent again.
+  assert.throws(() => apply(g, 'buyin', { pid: a, cents: 1, qid: 'q3abcdef' }, player));
+  assert.ok(!g.qids.includes('q3abcdef'));
+  assert.ok(g.qids.length <= 50);
+});

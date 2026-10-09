@@ -190,6 +190,10 @@ export function apply(game, type, payload, actor) {
     return p;
   };
   const before = game.log.length;
+  // A player's phone may send the same action again (it waited while the
+  // host was away, or the answer got lost); it only counts once.
+  const qid = typeof payload.qid === 'string' && /^[A-Za-z0-9_-]{6,24}$/.test(payload.qid) ? payload.qid : null;
+  if (qid && (game.qids || []).includes(qid)) return { entry: null };
 
   switch (type) {
     case 'join': {
@@ -365,6 +369,7 @@ export function apply(game, type, payload, actor) {
       break;
     }
   }
+  if (qid) game.qids = [...(game.qids || []), qid].slice(-50);
   bump(game);
   return { entry: game.log.length > before ? game.log[game.log.length - 1] : null };
 }
@@ -395,6 +400,7 @@ const K = {
   game: (code) => `felt:game:${code}`,
   snap: (code) => `felt:snap:${code}`,
   me: (code) => `felt:me:${code}`,
+  queue: (code) => `felt:queue:${code}`,
   host: (code) => `felt:host:${code}`,
   client: 'felt:client',
   name: 'felt:name',
@@ -451,9 +457,13 @@ export const storage = {
   saveSnapshot: (game) => write(K.snap(game.code), game),
   me: (code) => read(K.me(code)),
   saveMe: (code, me) => write(K.me(code), me),
+  // A player's actions waiting for the host to come back.
+  queue: (code) => read(K.queue(code), []),
+  saveQueue: (code, list) => (list.length ? write(K.queue(code), list) : remove(K.queue(code))),
   forget(code) {
     remove(K.snap(code));
     remove(K.me(code));
+    remove(K.queue(code));
   },
   // Take a game off this device's "Open games" list. A hosted game stays in
   // the account, so the host can pick it up again from another device.
