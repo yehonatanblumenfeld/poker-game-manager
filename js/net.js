@@ -306,7 +306,7 @@ export class PlayerLink {
     const key = await sessionKey(eph.privateKey, hostKey, sid);
     if (this.closed || hostKey !== this.hostKey) return;
     this.session = { sid, key };
-    const box = await seal(key, 'up', sid, { t: 'hello', id: rid(), ...this.hello() });
+    const box = await seal(key, 'up', sid, { t: 'hello', id: rid(), ...(await this.hello()) });
     this.channel.send({ type: 'broadcast', event: 'up', payload: { sid, epk, ...box } });
   }
 

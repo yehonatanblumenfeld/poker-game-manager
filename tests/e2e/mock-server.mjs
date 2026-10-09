@@ -56,6 +56,9 @@ const fns = {
   gameState({ secret }) {
     return latest([...games.values()].filter((g) => g.secret === secret))?.state ?? null;
   },
+  verify({ token }) {
+    return /^u-[a-z]+$/.test(String(token)) ? token : null;
+  },
   config(_, user) {
     return user ? { tip_bit_phone: '050-000-0000', tip_bit_link: 'https://www.bitpay.co.il/app/me/TEST-1234' } : {};
   },
