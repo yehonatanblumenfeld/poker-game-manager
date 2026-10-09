@@ -2187,19 +2187,6 @@ span.check {
   width: auto;
 }
 
-/* Google's own button (an iframe) takes the plain one's place once ready. */
-.gsi {
-  display: grid;
-  justify-items: center;
-  min-height: 44px;
-}
-.gsi--ready > .btn--google {
-  display: none;
-}
-.gsi--sm {
-  justify-items: start;
-}
-
 .acct {
   display: inline-grid;
   place-items: center;
