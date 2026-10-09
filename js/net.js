@@ -1,359 +1,389 @@
-// Host <-> player link over a public MQTT relay (no account, no database).
+// Host <-> player link over Supabase Realtime (WebSockets over TLS).
 //
-// Why a relay: direct phone-to-phone WebRTC is blocked on most mobile networks
-// and dies when the host's screen locks. MQTT over secure WebSockets goes
-// through port 443-style TLS like any website, so it works everywhere.
+// The host's phone runs the game: players send it actions, it applies them
+// and broadcasts the new table. One channel per table, named after the
+// table's 128-bit secret, which only people with the invite have.
 //
-// The host is still the source of truth. The relay only forwards messages and
-// keeps the latest table state (a "retained" message), so players see the
-// current table even while the host's phone is asleep.
-//
-// Everything is end-to-end encrypted (AES-GCM) with a key derived from the
-// game code; the relay and anyone listening on it only see ciphertext on an
-// opaque topic. We talk to two independent public brokers at once, so one
-// going down doesn't end the game.
+// Anyone with the link can join a channel and send on it, so nothing on it
+// is trusted by default:
+// - The host has two key pairs: ECDSA to sign every table it sends, ECDH so
+//   players can talk to it privately. Both public keys are saved with the
+//   game in the database, which only the signed-in host can write; players
+//   read them from there (over TLS) and check everything against them.
+// - What a player sends the host is end-to-end encrypted with a key derived
+//   from the host's ECDH key, so other players can't read it or forge it.
+// - The table itself is signed but not encrypted: everyone at it sees it.
 
-const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-const PING_MS = 20000;
-const OFFLINE_AFTER_MS = 50000;
-
-function brokers() {
-  // ?broker=ws://127.0.0.1:8888 points at a local broker (used by tests).
-  const override = new URLSearchParams(location.search).getAll('broker');
-  return override.length ? override : BROKERS;
-}
-
-// ---------------- crypto ----------------
+const STATE_LOG = 60; // activity entries sent with each table update
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-async function sha256Hex(s) {
-  const buf = await crypto.subtle.digest('SHA-256', enc.encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+const b64 = (buf) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+const unb64 = (s) => Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const rid = () => b64(crypto.getRandomValues(new Uint8Array(12)));
+
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' };
+const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' };
+const SIGN = { name: 'ECDSA', hash: 'SHA-256' };
+
+const verifiers = new Map(); // public key -> CryptoKey
+
+async function verify(publicRaw, data, sig) {
+  try {
+    let key = verifiers.get(publicRaw);
+    if (!key) {
+      key = await crypto.subtle.importKey('raw', unb64(publicRaw), ECDSA, false, ['verify']);
+      verifiers.set(publicRaw, key);
+    }
+    return await crypto.subtle.verify(SIGN, key, unb64(sig), enc.encode(data));
+  } catch {
+    return false;
+  }
 }
 
-async function channelFor(code) {
-  const base = await crypto.subtle.importKey('raw', enc.encode(code.toUpperCase()), 'PBKDF2', false, ['deriveKey']);
-  const key = await crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt: enc.encode('felt-poker/v1'), iterations: 150000, hash: 'SHA-256' },
-    base,
+async function sessionKey(privateKey, publicRaw, sid) {
+  const pub = await crypto.subtle.importKey('raw', unb64(publicRaw), ECDH, false, []);
+  const bits = await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, privateKey, 256);
+  const hkdf = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: enc.encode('felt/v2'), info: enc.encode(sid) },
+    hkdf,
     { name: 'AES-GCM', length: 256 },
     false,
     ['encrypt', 'decrypt'],
   );
-  const topic = `felt-poker/v1/${(await sha256Hex(`topic:${code.toUpperCase()}`)).slice(0, 32)}`;
-  return { key, topic };
 }
 
-async function seal(key, obj) {
+// `dir` is bound into each message so a host reply can't be replayed as a
+// player message or the other way round.
+async function seal(key, dir, sid, obj) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(obj))));
-  const out = new Uint8Array(iv.length + data.length);
-  out.set(iv);
-  out.set(data, iv.length);
-  return out;
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(dir + sid) }, key, enc.encode(JSON.stringify(obj)));
+  return { iv: b64(iv), ct: b64(ct) };
 }
 
-async function open(key, bytes) {
+async function open(key, dir, sid, { iv, ct }) {
   try {
-    const u = new Uint8Array(bytes);
-    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: u.slice(0, 12) }, key, u.slice(12));
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv), additionalData: enc.encode(dir + sid) }, key, unb64(ct));
     return JSON.parse(dec.decode(plain));
   } catch {
-    return null; // not ours, or tampered with
+    return null; // not for us, or tampered with
   }
 }
 
-// ---------------- multi-broker bus ----------------
-
-// One logical connection fanned out over every broker. Messages carry an id so
-// a message that arrives through both brokers is handled once.
-class Bus {
-  constructor({ clientId, clean, will, onMessage, onChange, subscribe }) {
-    this.seen = new Set();
-    this.seenOrder = [];
-    this.onMessage = onMessage;
-    this.onChange = onChange;
-    this.clients = brokers().map((url) => {
-      const c = window.mqtt.connect(url, {
-        clientId,
-        clean,
-        keepalive: 30,
-        reconnectPeriod: 2500,
-        connectTimeout: 10000,
-        protocolVersion: 4,
-        will,
-      });
-      c.on('connect', () => {
-        c.subscribe(subscribe, { qos: 1 });
-        this.onChange();
-      });
-      for (const ev of ['close', 'offline', 'error']) c.on(ev, () => this.onChange());
-      c.on('message', (topic, payload, packet) => this.onMessage(topic, payload, packet));
-      return c;
-    });
-  }
-
-  connected() {
-    return this.clients.some((c) => c.connected);
-  }
-
-  publish(topic, payload, opts = { qos: 1 }) {
-    for (const c of this.clients) if (c.connected) c.publish(topic, payload, opts);
-    // Not connected right now: mqtt.js queues it and sends on reconnect.
-    for (const c of this.clients) if (!c.connected) c.publish(topic, payload, opts);
-  }
-
-  dedupe(id) {
-    if (!id) return false;
-    if (this.seen.has(id)) return true;
-    this.seen.add(id);
-    this.seenOrder.push(id);
-    if (this.seenOrder.length > 500) this.seen.delete(this.seenOrder.shift());
-    return false;
-  }
-
-  end() {
-    for (const c of this.clients) {
-      try {
-        c.end(true);
-      } catch {}
-    }
-  }
+function channelFor(client, secret, presenceKey) {
+  return client.channel(`felt:${secret}`, {
+    config: { broadcast: { self: false, ack: false }, presence: { key: presenceKey } },
+  });
 }
 
-const msgId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+// Remembers recent message ids so a replayed message is applied once.
+class Seen {
+  constructor() {
+    this.set = new Set();
+    this.order = [];
+  }
+  add(id) {
+    if (!id || this.set.has(id)) return false;
+    this.set.add(id);
+    this.order.push(id);
+    if (this.order.length > 300) this.set.delete(this.order.shift());
+    return true;
+  }
+}
 
 // ---------------- host ----------------
 
 export class HostLink {
-  constructor(code, { onMessage, onPresence, onStatus }) {
+  constructor(client, secret, { onMessage, onPresence, onStatus }) {
+    this.client = client;
     this.onMessage = onMessage;
     this.onPresence = onPresence;
     this.onStatus = onStatus;
-    this.peers = new Map(); // clientId -> { pid, seen }
+    this.sessions = new Map(); // sid -> { key, pid, seen }
+    this.onlinePids = new Set();
     this.closed = false;
     this.onStatus('starting');
-    this.ready = channelFor(code).then(({ key, topic }) => {
+    this.ready = this.start(secret);
+  }
+
+  async start(secret) {
+    this.keys = await crypto.subtle.generateKey(ECDH, false, ['deriveBits']);
+    this.signer = await crypto.subtle.generateKey(ECDSA, false, ['sign', 'verify']);
+    this.publicKey = b64(await crypto.subtle.exportKey('raw', this.keys.publicKey));
+    // Players trust these once they read them from the saved game.
+    this.anchor = { dh: this.publicKey, sig: b64(await crypto.subtle.exportKey('raw', this.signer.publicKey)) };
+    if (this.closed) return;
+    const ch = (this.channel = channelFor(this.client, secret, 'host'));
+    ch.on('broadcast', { event: 'up' }, ({ payload }) => this.receive(payload));
+    ch.on('presence', { event: 'sync' }, () => this.presence());
+    ch.subscribe((status) => {
       if (this.closed) return;
-      this.key = key;
-      this.topic = topic;
-      this.bus = new Bus({
-        // Stable id + persistent session: messages sent while the host blinks
-        // offline are queued by the broker and delivered when it's back.
-        clientId: `felt-h-${topic.slice(-16)}`,
-        clean: false,
-        will: { topic: `${topic}/host`, payload: 'off', qos: 1, retain: true },
-        subscribe: [`${topic}/up`],
-        onChange: () => this.status(),
-        onMessage: (_t, payload) => this.receive(payload),
-      });
+      if (status === 'SUBSCRIBED') {
+        ch.track({ role: 'host', key: this.publicKey });
+        this.onStatus('live');
+        if (this.lastState) this.publish(this.lastState);
+      } else {
+        this.onStatus('offline');
+      }
     });
-    this.sweep = setInterval(() => this.expire(), 10000);
   }
 
-  status() {
-    if (this.closed || !this.bus) return;
-    const live = this.bus.connected();
-    if (live && !this.announced) {
-      this.announced = true;
-      this.bus.publish(`${this.topic}/host`, 'on', { qos: 1, retain: true });
-      if (this.lastState) this.publishState(this.lastState);
+  presence() {
+    const next = new Set();
+    for (const [key, metas] of Object.entries(this.channel.presenceState())) {
+      if (key === 'host') continue;
+      for (const m of metas) if (m.pid) next.add(m.pid);
     }
-    if (!live) this.announced = false;
-    this.onStatus(live ? 'live' : 'offline');
-  }
-
-  async receive(payload) {
-    const msg = await open(this.key, payload);
-    if (!msg || typeof msg !== 'object' || !msg.cid || this.bus.dedupe(msg.id)) return;
-    const cid = String(msg.cid);
-    const peer = this.peers.get(cid);
-    if (msg.t === 'bye') {
-      if (peer) {
-        this.peers.delete(cid);
-        this.onPresence();
-      }
-      return;
-    }
-    if (peer) {
-      const wasOff = Date.now() - peer.seen > OFFLINE_AFTER_MS;
-      peer.seen = Date.now();
-      if (wasOff) this.onPresence();
-    }
-    if (msg.t === 'ping') {
-      // A player we don't know yet (host reloaded): ask them to say hello.
-      if (!peer) this.send(cid, { t: 'rehello' });
-      return;
-    }
-    this.onMessage(msg, cid);
-  }
-
-  expire() {
-    const now = Date.now();
-    let changed = false;
-    for (const [cid, p] of this.peers) {
-      if (now - p.seen > OFFLINE_AFTER_MS && !p.reported) {
-        p.reported = true;
-        changed = true;
-      } else if (now - p.seen <= OFFLINE_AFTER_MS && p.reported) {
-        p.reported = false;
-        changed = true;
-      }
-    }
+    const changed = next.size !== this.onlinePids.size || [...next].some((p) => !this.onlinePids.has(p));
+    this.onlinePids = next;
     if (changed) this.onPresence();
   }
 
-  bind(cid, pid) {
-    this.peers.set(cid, { pid, seen: Date.now() });
-    this.onPresence();
+  async receive(p) {
+    if (!p || typeof p.sid !== 'string' || p.sid.length > 40) return;
+    let s = this.sessions.get(p.sid);
+    if (p.epk) {
+      // A player says hello: derive their private key from their one-time
+      // public key. A new hello replaces any older session with that id.
+      try {
+        s = { key: await sessionKey(this.keys.privateKey, p.epk, p.sid), pid: null, seen: new Seen() };
+      } catch {
+        return;
+      }
+      const msg = await open(s.key, 'up', p.sid, p);
+      if (!msg || msg.t !== 'hello') return;
+      this.sessions.set(p.sid, s);
+      if (this.sessions.size > 200) this.sessions.delete(this.sessions.keys().next().value);
+      if (!s.seen.add(msg.id)) return;
+      return this.onMessage(msg, p.sid);
+    }
+    if (!s) return;
+    const msg = await open(s.key, 'up', p.sid, p);
+    if (!msg || !s.seen.add(msg.id)) return;
+    this.onMessage(msg, p.sid);
   }
 
-  pidOf(cid) {
-    return this.peers.get(cid)?.pid ?? null;
+  bind(sid, pid) {
+    const s = this.sessions.get(sid);
+    if (s) s.pid = pid;
+  }
+
+  pidOf(sid) {
+    return this.sessions.get(sid)?.pid ?? null;
   }
 
   online() {
-    const now = Date.now();
-    return [...new Set([...this.peers.values()].filter((p) => now - p.seen <= OFFLINE_AFTER_MS).map((p) => p.pid))];
+    return [...this.onlinePids];
   }
 
-  async send(cid, msg) {
+  async send(sid, msg) {
     await this.ready;
-    if (!this.bus) return;
-    this.bus.publish(`${this.topic}/down/${cid}`, await seal(this.key, { ...msg, id: msgId() }));
+    const s = this.sessions.get(sid);
+    if (!s || !this.channel) return;
+    const box = await seal(s.key, 'down', sid, { ...msg, id: rid() });
+    this.channel.send({ type: 'broadcast', event: 'down', payload: { sid, ...box } });
   }
 
   async broadcast(msg) {
     this.lastState = msg;
     await this.ready;
-    if (this.bus) this.publishState(msg);
+    this.publish(msg);
   }
 
-  async publishState(msg) {
-    // Keep the retained payload small: the full log stays on the host.
-    const game = { ...msg.game, log: msg.game.log.slice(-150) };
-    this.bus.publish(`${this.topic}/state`, await seal(this.key, { ...msg, game, id: msgId() }), { qos: 1, retain: true });
+  async publish(msg) {
+    if (!this.channel || this.closed) return;
+    // The full log stays with the host (and in the saved game).
+    const data = JSON.stringify({ ...msg.game, log: msg.game.log.slice(-STATE_LOG) });
+    const sig = b64(await crypto.subtle.sign(SIGN, this.signer.privateKey, enc.encode(data)));
+    if (this.closed || msg !== this.lastState) return; // a newer table is on its way
+    this.channel.send({ type: 'broadcast', event: 'state', payload: { data, sig } });
   }
 
   close() {
     this.closed = true;
-    clearInterval(this.sweep);
-    this.bus?.end();
+    if (this.channel) this.client.removeChannel(this.channel);
   }
 }
 
 // ---------------- player ----------------
 
 export class PlayerLink {
-  constructor(code, { hello, onMessage, onStatus }) {
+  // `trust()` resolves to the host's public keys as saved in the database.
+  constructor(client, secret, { hello, onMessage, onStatus, onPresence, trust, anchor }) {
+    this.client = client;
+    this.trust = trust;
+    this.anchor = anchor ?? null;
     this.hello = hello;
     this.onMessage = onMessage;
     this.onStatus = onStatus;
+    this.onPresence = onPresence;
     this.pending = new Map();
-    this.hostOn = null;
+    this.onlinePids = new Set();
+    this.hostKey = null;
+    this.session = null;
+    this.subscribed = false;
     this.closed = false;
     this.rev = -1;
+    this.me = rid(); // presence key for this page
     this.onStatus('connecting');
-    this.ready = channelFor(code).then(async ({ key, topic }) => {
+
+    const ch = (this.channel = channelFor(client, secret, this.me));
+    ch.on('broadcast', { event: 'state' }, ({ payload }) => this.state(payload));
+    ch.on('broadcast', { event: 'down' }, ({ payload }) => this.down(payload));
+    ch.on('presence', { event: 'sync' }, () => this.presence());
+    ch.subscribe((status) => {
       if (this.closed) return;
-      this.key = key;
-      this.topic = topic;
-      const cid = hello().clientId;
-      this.cid = cid;
-      this.bus = new Bus({
-        clientId: `felt-p-${cid.slice(0, 12)}`,
-        clean: true,
-        will: { topic: `${topic}/up`, payload: await seal(key, { t: 'bye', cid, id: msgId() }), qos: 0, retain: false },
-        subscribe: [`${topic}/state`, `${topic}/host`, `${topic}/down/${cid}`],
-        onChange: () => this.connectedChanged(),
-        onMessage: (t, payload) => this.receive(t, payload),
-      });
+      this.subscribed = status === 'SUBSCRIBED';
+      if (this.subscribed) this.track();
+      this.report();
     });
-    this.timer = setInterval(() => this.up({ t: 'ping' }), PING_MS);
-    this.onVis = () => {
-      if (document.visibilityState === 'visible') this.up({ t: 'ping' });
-    };
-    document.addEventListener('visibilitychange', this.onVis);
   }
 
-  connectedChanged() {
-    if (this.closed) return;
-    const up = this.bus.connected();
-    if (up && !this.greeted) {
-      this.greeted = true;
-      this.up({ t: 'hello', ...this.hello() });
+  track(pid = this.pid) {
+    this.pid = pid;
+    if (this.subscribed) this.channel.track({ role: 'player', pid: pid ?? null });
+  }
+
+  presence() {
+    const state = this.channel.presenceState();
+    // Anyone can claim to be "host" in presence; prefer the key the saved
+    // game vouches for, so an impostor can't hide the real host.
+    const hosts = (state.host ?? []).map((m) => m.key).filter(Boolean);
+    const hostKey = hosts.find((k) => k === this.anchor?.dh) ?? hosts[0] ?? null;
+    const next = new Set();
+    for (const [key, metas] of Object.entries(state)) {
+      if (key === 'host') continue;
+      for (const m of metas) if (m.pid) next.add(m.pid);
     }
-    if (!up) this.greeted = false;
+    this.onlinePids = next;
+    if (hostKey !== this.hostKey) {
+      this.hostKey = hostKey;
+      this.session = null;
+      this.welcomed = false;
+      // A new host key means the host (re)opened the table: say hello again,
+      // but only to the key the saved game vouches for.
+      if (hostKey) this.greetIfTrusted(hostKey);
+    }
     this.report();
+    this.onPresence?.();
+  }
+
+  async refreshAnchor() {
+    const now = Date.now();
+    if (this.anchorAt && now - this.anchorAt < 3000) return this.anchorWait;
+    this.anchorAt = now;
+    this.anchorWait = Promise.resolve(this.trust?.())
+      .then((a) => {
+        if (a?.dh && a?.sig) this.anchor = a;
+      })
+      .catch(() => {});
+    return this.anchorWait;
+  }
+
+  async greetIfTrusted(hostKey, tries = 0) {
+    if (this.anchor?.dh !== hostKey) await this.refreshAnchor();
+    if (this.closed || hostKey !== this.hostKey) return;
+    if (this.anchor?.dh === hostKey) return this.greet();
+    // The host may not have saved its new keys yet.
+    if (tries < 5) setTimeout(() => this.greetIfTrusted(hostKey, tries + 1), 1500 * (tries + 1));
+  }
+
+  online() {
+    return this.onlinePids;
+  }
+
+  async greet() {
+    const hostKey = this.hostKey;
+    const sid = rid();
+    const eph = await crypto.subtle.generateKey(ECDH, false, ['deriveBits']);
+    const epk = b64(await crypto.subtle.exportKey('raw', eph.publicKey));
+    const key = await sessionKey(eph.privateKey, hostKey, sid);
+    if (this.closed || hostKey !== this.hostKey) return;
+    this.session = { sid, key };
+    const box = await seal(key, 'up', sid, { t: 'hello', id: rid(), ...this.hello() });
+    this.channel.send({ type: 'broadcast', event: 'up', payload: { sid, epk, ...box } });
   }
 
   report() {
-    if (!this.bus?.connected()) return this.onStatus('offline');
-    if (this.hostOn === false) return this.onStatus('noHost');
-    if (this.hostOn === true && this.welcomed) return this.onStatus('online');
+    if (!this.subscribed) return this.onStatus('offline');
+    if (!this.hostKey) return this.onStatus('noHost');
+    if (this.welcomed) return this.onStatus('online');
     this.onStatus('connecting');
   }
 
-  async receive(topic, payload) {
-    if (topic.endsWith('/host')) {
-      const on = String(payload) === 'on';
-      if (on && this.hostOn === false) this.up({ t: 'hello', ...this.hello() });
-      this.hostOn = on;
-      return this.report();
+  async state(payload) {
+    if (typeof payload?.data !== 'string' || typeof payload.sig !== 'string') return;
+    let ok = this.anchor && (await verify(this.anchor.sig, payload.data, payload.sig));
+    if (!ok) {
+      await this.refreshAnchor();
+      ok = this.anchor && (await verify(this.anchor.sig, payload.data, payload.sig));
     }
-    const msg = await open(this.key, payload);
-    if (!msg || this.bus.dedupe(msg.id)) return;
-    if (msg.t === 'rehello') return this.up({ t: 'hello', ...this.hello() });
+    if (!ok) return; // not from the host
+    let g;
+    try {
+      g = JSON.parse(payload.data);
+    } catch {
+      return;
+    }
+    if (!g || typeof g !== 'object') return;
+    if (g.id === this.gameId && g.rev < this.rev) return;
+    this.gameId = g.id;
+    this.rev = g.rev;
+    this.onMessage({ t: 'state', game: g });
+  }
+
+  async down(p) {
+    const s = this.session;
+    if (!s || !p || p.sid !== s.sid) return;
+    const msg = await open(s.key, 'down', s.sid, p);
+    if (!msg) return;
     if (msg.t === 'ok' || (msg.t === 'err' && msg.rid)) {
-      const p = this.pending.get(msg.rid);
-      if (p) {
+      const req = this.pending.get(msg.rid);
+      if (req) {
         this.pending.delete(msg.rid);
-        clearTimeout(p.timer);
-        msg.t === 'ok' ? p.resolve(msg) : p.reject(Object.assign(new Error(msg.code), { code: msg.code }));
+        clearTimeout(req.timer);
+        msg.t === 'ok' ? req.resolve(msg) : req.reject(Object.assign(new Error(msg.code), { code: msg.code }));
       }
       return;
     }
     if (msg.t === 'welcome') {
       this.welcomed = true;
+      this.track(msg.pid);
       this.report();
-    }
-    if (msg.t === 'state') {
-      // Both brokers deliver the same state; ignore anything older.
-      if (msg.game?.rev != null && msg.game.id === this.gameId && msg.game.rev < this.rev) return;
-      this.gameId = msg.game?.id;
-      this.rev = msg.game?.rev ?? this.rev;
     }
     this.onMessage(msg);
   }
 
-  async up(msg) {
-    await this.ready;
-    if (!this.bus || this.closed) return;
-    this.bus.publish(`${this.topic}/up`, await seal(this.key, { ...msg, cid: this.cid, id: msgId() }));
+  // Re-introduce ourselves (e.g. after picking a new name).
+  rehello() {
+    if (this.hostKey) this.greet();
   }
 
   request(type, payload) {
     return new Promise((resolve, reject) => {
-      if (!this.bus?.connected() || this.hostOn === false) return reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
-      const rid = msgId();
+      const s = this.session;
+      if (!s || !this.subscribed || !this.welcomed) return reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
+      const id = rid();
       const timer = setTimeout(() => {
-        this.pending.delete(rid);
+        this.pending.delete(id);
         reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
       }, 10000);
-      this.pending.set(rid, { resolve, reject, timer });
-      this.up({ t: 'act', rid, type, payload });
+      this.pending.set(id, { resolve, reject, timer });
+      seal(s.key, 'up', s.sid, { t: 'act', id, rid: id, type, payload }).then((box) =>
+        this.channel.send({ type: 'broadcast', event: 'up', payload: { sid: s.sid, ...box } }),
+      );
     });
   }
 
   close() {
     this.closed = true;
-    clearInterval(this.timer);
-    document.removeEventListener('visibilitychange', this.onVis);
-    if (this.bus) {
-      this.up({ t: 'bye' });
-      setTimeout(() => this.bus.end(), 300);
-    }
+    for (const { timer } of this.pending.values()) clearTimeout(timer);
+    this.client.removeChannel(this.channel);
   }
 }

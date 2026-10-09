@@ -1,6 +1,7 @@
 import { t, initLang, setLang, lang, money, chips, duration, clock, date, currencySymbol } from './i18n.js';
 import { esc, toast, sheet, closeSheet, floatLabel, ICONS } from './ui.js';
 import { HostLink, PlayerLink } from './net.js';
+import { cloud, initCloud } from './cloud.js';
 import {
   createGame,
   rematch,
@@ -8,6 +9,9 @@ import {
   ActionError,
   storage,
   normalizeCode,
+  CODE_LENGTH,
+  isSecret,
+  deviceKey,
   cleanName,
   freeSeats,
   player,
@@ -56,8 +60,9 @@ function langButton() {
   return `<button class="lang-btn" data-act="lang" aria-label="${esc(t('lang.switchLabel'))}">${esc(t('lang.switch'))}</button>`;
 }
 
-function inviteUrl(code) {
-  return `${location.origin}${location.pathname}${location.search}#/g/${code}`;
+// The secret rides in the URL fragment, which browsers never send to a server.
+function inviteUrl(game) {
+  return `${location.origin}${location.pathname}${location.search}#/g/${game.code}/${game.secret}`;
 }
 
 function haptic() {
@@ -72,13 +77,94 @@ document.addEventListener('click', (e) => {
     closeSheet();
     currentView();
   }
+  if (e.target.closest('[data-act="account"]')) openAccount();
+  if (e.target.closest('[data-act="signin"]')) openSignIn();
+  if (e.target.closest('[data-google]')) googleSignIn();
+});
+
+// ---------------- account ----------------
+
+const GOOGLE_G = `<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`;
+
+function googleButton(cls = '') {
+  return `<button type="button" class="btn btn--google ${cls}" data-google>${GOOGLE_G}<span>${esc(t('auth.google'))}</span></button>`;
+}
+
+function googleSignIn() {
+  if (!cloud.available()) return toast(t('auth.unavailable'), { tone: 'error' });
+  cloud.signIn(location.hash || '#/').catch(() => toast(t('auth.failed'), { tone: 'error' }));
+}
+
+function userBadge() {
+  const pic = cloud.avatar();
+  const name = cloud.name() || cloud.email();
+  return pic
+    ? `<img class="acct__pic" src="${esc(pic)}" alt="" referrerpolicy="no-referrer" />`
+    : `<span class="acct__pic acct__pic--text" aria-hidden="true">${esc(initials(name || '?'))}</span>`;
+}
+
+function accountButton() {
+  if (!cloud.available()) return '';
+  return cloud.user()
+    ? `<button class="acct" data-act="account" aria-label="${esc(t('auth.account'))}">${userBadge()}</button>`
+    : `<button class="lang-btn" data-act="signin">${esc(t('auth.signIn'))}</button>`;
+}
+
+function openSignIn(reason = '') {
+  sheet({
+    title: t('auth.signIn'),
+    render: (b) => {
+      b.innerHTML = `
+        <p class="hint">${esc(reason || t('auth.why'))}</p>
+        ${googleButton('btn--lg')}`;
+    },
+  });
+}
+
+function openAccount() {
+  sheet({
+    title: t('auth.account'),
+    render: (b, close) => {
+      b.innerHTML = `
+        <div class="pcard">
+          ${userBadge().replace('acct__pic', 'acct__pic acct__pic--lg')}
+          <div>
+            <p class="pcard__name"><bdi>${esc(cloud.name() || cloud.email())}</bdi></p>
+            <p class="pcard__sub" dir="ltr">${esc(cloud.email())}</p>
+          </div>
+        </div>
+        <a class="btn btn--lg" href="#/stats">${esc(t('home.history'))}</a>
+        <button class="btn btn--ghost btn--danger-text" data-signout>${esc(t('auth.signOut'))}</button>`;
+      b.querySelector('[data-signout]').addEventListener('click', () => {
+        cloud.signOut().finally(() => close());
+      });
+      b.querySelector('a').addEventListener('click', () => close());
+    },
+  });
+}
+
+// When someone signs in, everything they already did on this device joins
+// their account: games they hosted are saved, games they joined are linked.
+function adoptLocalGames() {
+  if (!cloud.user()) return;
+  const { hosted, joined } = storage.allLocal();
+  for (const g of hosted) cloud.saveGame(g);
+  // Linking needs the host's save to land first; give it a moment.
+  setTimeout(() => joined.forEach(({ gameId, pid }) => cloud.linkGame(gameId, pid)), hosted.length ? 2500 : 0);
+}
+
+cloud.onChange((u) => {
+  closeSheet();
+  if (u) adoptLocalGames();
+  if (session) rerender(session, []);
+  else currentView();
 });
 
 // ---------------- router ----------------
 
 function route() {
   const hash = location.hash.replace(/^#\/?/, '');
-  const [view, arg] = hash.split('/');
+  const [view, arg, extra] = hash.split('/');
   const code = normalizeCode(arg);
   if (session && !(view === 'g' && code === session.code)) {
     session.destroy();
@@ -87,8 +173,8 @@ function route() {
   closeSheet();
   window.scrollTo(0, 0);
   if (view === 'new') return show(viewNew);
-  if (view === 'g' && code.length === 6) return show(() => viewGame(code));
-  if (view === 'stats') return show(viewStats);
+  if (view === 'g' && code.length === CODE_LENGTH) return show(() => viewGame(code, isSecret(extra) ? extra : null));
+  if (view === 'stats') return show(() => viewStats(arg));
   return show(viewHome);
 }
 
@@ -106,11 +192,11 @@ function viewHome() {
   app.innerHTML = `
   <main class="page page--home">
     <header class="topbar topbar--end">
+      ${accountButton()}
       ${langButton()}
     </header>
     <section class="hero">
-      ${heroArt()}
-      <h1 class="wordmark">Felt</h1>
+      ${wordmark()}
       <p class="hero__tag">${esc(t('app.tagline'))}</p>
     </section>
     <div class="stack stack--tight">
@@ -118,7 +204,7 @@ function viewHome() {
       <form class="join-form" data-form="join">
         <label class="sr-only" for="join-code">${esc(t('home.joinPlaceholder'))}</label>
         <input id="join-code" class="input input--code" name="code" placeholder="${esc(t('home.joinPlaceholder'))}"
-          autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="7" dir="ltr" />
+          autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="10" dir="ltr" />
         <button class="btn" type="submit">${esc(t('home.joinGo'))}</button>
       </form>
     </div>
@@ -150,11 +236,23 @@ function viewHome() {
     e.preventDefault();
     const raw = e.target.code.value;
     // Accept a pasted invite link as well as a bare code.
-    const fromLink = raw.match(/#\/g\/(\w+)/);
+    const fromLink = raw.match(/#\/g\/(\w+)(?:\/([\w-]+))?/);
     const code = normalizeCode(fromLink ? fromLink[1] : raw);
-    if (code.length === 6) location.hash = `#/g/${code}`;
+    if (code.length === CODE_LENGTH) location.hash = fromLink?.[2] ? `#/g/${code}/${fromLink[2]}` : `#/g/${code}`;
     else e.target.code.focus();
   });
+}
+
+// The Chipper wordmark: a poker chip bent into the C, and a small chip for
+// the dot on the i. Always laid out left to right, even in Hebrew.
+function wordmark() {
+  return `<h1 class="wordmark" dir="ltr" aria-label="Chipper">
+    <svg class="wordmark__c" viewBox="0 0 100 100" aria-hidden="true">
+      <path d="M75.46 24.54A36 36 0 1 0 75.46 75.46" class="chip-c"/>
+      <path d="M75.46 24.54A36 36 0 1 0 75.46 75.46" class="chip-c__marks"/>
+      <path d="M69.09 30.91A27 27 0 1 0 69.09 69.09" class="chip-c__inlay"/>
+    </svg><span aria-hidden="true">h<span class="wordmark__i">\u0131<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/><circle cx="50" cy="50" r="38"/></svg></span>pper</span>
+  </h1>`;
 }
 
 function heroArt() {
@@ -177,8 +275,27 @@ function heroArt() {
 
 // ---------------- new game ----------------
 
+function viewHostGate() {
+  app.innerHTML = `
+  <main class="page page--form">
+    <header class="topbar">
+      <a class="icon-btn" href="#/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <h1 class="topbar__title">${esc(t('new.title'))}</h1>
+      ${langButton()}
+    </header>
+    <section class="gate">
+      ${heroArt()}
+      <h2 class="gate__title">${esc(t('auth.hostTitle'))}</h2>
+      <p class="hint hint--center">${esc(t('auth.hostWhy'))}</p>
+      ${googleButton('btn--lg')}
+      <p class="hint hint--center gate__small">${esc(t('auth.guestsOk'))}</p>
+    </section>
+  </main>`;
+}
+
 function viewNew() {
-  const last = storage.lastName();
+  if (!cloud.user()) return viewHostGate();
+  const last = storage.lastName() || cloud.name().split(' ')[0];
   const f = {
     name: '',
     type: 'fixed',
@@ -350,7 +467,7 @@ function viewNew() {
       return;
     }
     storage.setLastName(v.hostName);
-    const game = createGame({ ...v, clientId: storage.clientId() });
+    const game = createGame(v);
     storage.saveHosted(game);
     location.hash = `#/g/${game.code}`;
   });
@@ -367,13 +484,21 @@ class HostSession {
     this.me = this.game.managerId;
     this.status = 'starting';
     this.seen = new Set();
-    this.link = new HostLink(code, {
-      onMessage: (msg, conn) => this.onMessage(msg, conn),
-      onPresence: () => this.changed(null, { quiet: true }),
-      onStatus: (s) => {
-        this.status = s;
+    this.link = new HostLink(cloud.realtime(), this.game.secret, {
+      onMessage: (msg, sid) => this.onMessage(msg, sid),
+      onPresence: () => rerender(this, []),
+      onStatus: (st) => {
+        this.status = st;
         renderStatus(this);
       },
+    });
+    // Players only trust the keys saved with the game, so save them first.
+    this.link.ready.then(() => {
+      if (!this.link.anchor) return;
+      this.game.keys = this.link.anchor;
+      storage.saveHosted(this.game);
+      cloud.saveGame(this.game, { now: true });
+      this.link.broadcast({ t: 'state', game: this.game });
     });
     this.wake();
     this.onVis = () => document.visibilityState === 'visible' && this.wake();
@@ -403,45 +528,49 @@ class HostSession {
   }
 
   replaceGame(game) {
+    game.keys = this.link.anchor ?? game.keys;
     this.game = game;
     this.changed(null, { mine: true });
   }
 
-  onMessage(msg, conn) {
+  async onMessage(msg, sid) {
     if (msg.t === 'hello') {
+      let key;
       try {
-        const { pid } = apply(this.game, 'join', { clientId: String(msg.clientId || ''), name: msg.name }, { pid: null, host: false });
-        this.link.bind(conn, pid);
-        this.link.send(conn, { t: 'welcome', pid });
+        key = await deviceKey(String(msg.clientId || ''));
+        const { pid } = apply(this.game, 'join', { key, name: msg.name }, { pid: null, host: false });
+        this.link.bind(sid, pid);
+        this.link.send(sid, { t: 'welcome', pid });
         const last = this.game.log[this.game.log.length - 1];
         this.changed(last?.type === 'join' && last.pid === pid && !this.seen.has(last.id) ? last : null);
       } catch (e) {
-        this.link.send(conn, { t: 'err', code: e.code || 'generic' });
+        this.link.send(sid, { t: 'err', code: e instanceof ActionError ? e.code : 'generic' });
       }
       return;
     }
     if (msg.t === 'act') {
-      const pid = this.link.pidOf(conn);
+      const pid = this.link.pidOf(sid);
       if (!pid) return;
       try {
         const r = apply(this.game, String(msg.type), { ...(msg.payload || {}) }, { pid, host: false });
-        this.link.send(conn, { t: 'ok', rid: msg.rid });
+        this.link.send(sid, { t: 'ok', rid: msg.rid });
         this.changed(r.entry);
       } catch (e) {
-        this.link.send(conn, { t: 'err', rid: msg.rid, code: e instanceof ActionError ? e.code : 'generic' });
+        this.link.send(sid, { t: 'err', rid: msg.rid, code: e instanceof ActionError ? e.code : 'generic' });
       }
     }
   }
 
-  changed(entry, { mine = false, quiet = false } = {}) {
+  changed(entry, { mine = false } = {}) {
     storage.saveHosted(this.game);
+    cloud.saveGame(this.game);
     if (this.game.status === 'ended') storage.recordResult(this.game);
-    this.link.broadcast({ t: 'state', game: this.game, online: this.link.online() });
+    this.link.broadcast({ t: 'state', game: this.game });
     if (entry) {
       this.seen.add(entry.id);
       if (!mine) notify(this, [entry]);
     }
-    if (!quiet || this.game) rerender(this, entry ? [entry] : []);
+    rerender(this, entry ? [entry] : []);
   }
 
   destroy() {
@@ -453,29 +582,69 @@ class HostSession {
 }
 
 class PlayerSession {
-  constructor(code) {
+  // `secret` comes from the invite link, from this device, or from the code.
+  constructor(code, secret) {
     this.role = 'player';
     this.code = code;
     this.game = storage.snapshot(code);
     this.ident = storage.me(code);
     this.me = this.ident?.pid ?? null;
+    this.secret = secret || this.ident?.secret || this.game?.secret || null;
     this.status = 'connecting';
-    this.onlineSet = new Set();
+    this.start();
+  }
+
+  async start() {
+    if (!this.secret) {
+      try {
+        this.secret = await cloud.findGame(this.code);
+      } catch {}
+      if (this !== session) return;
+      if (!this.secret) {
+        this.missing = true;
+        return rerender(this, []);
+      }
+    }
+    // The table as the host last saved it: shows up even if the host's
+    // phone is asleep, and vouches for the host's keys.
+    const saved = await this.fetchSaved();
+    if (this !== session) return;
+    if (saved && (!this.game || this.game.id !== saved.id || saved.rev > this.game.rev)) {
+      this.game = saved;
+      storage.saveSnapshot(saved);
+    }
+    if (!this.game) {
+      this.missing = true;
+      return rerender(this, []);
+    }
     if (this.ident) this.connect();
+    rerender(this, []);
+  }
+
+  async fetchSaved() {
+    try {
+      return await cloud.gameState(this.secret);
+    } catch {
+      return null;
+    }
   }
 
   online() {
-    return this.onlineSet;
+    return this.link?.online() ?? new Set();
   }
 
   connect() {
-    this.link = new PlayerLink(this.code, {
+    if (!cloud.realtime()) return;
+    this.link = new PlayerLink(cloud.realtime(), this.secret, {
       hello: () => ({ clientId: this.ident.clientId, name: this.ident.name }),
-      onStatus: (s) => {
+      anchor: this.game?.keys,
+      trust: () => this.fetchSaved().then((g) => g?.keys),
+      onPresence: () => this.game && rerender(this, []),
+      onStatus: (st) => {
         const could = this.status === 'online';
-        this.status = s;
+        this.status = st;
         // Action buttons depend on whether the host is reachable.
-        if (could !== (s === 'online') && this.game) rerender(this, []);
+        if (could !== (st === 'online') && this.game) rerender(this, []);
         else renderStatus(this);
       },
       onMessage: (msg) => this.onMessage(msg),
@@ -483,7 +652,7 @@ class PlayerSession {
   }
 
   join(name) {
-    this.ident = { clientId: storage.clientId(), name, pid: null };
+    this.ident = { clientId: storage.clientId(), name, pid: null, secret: this.secret };
     storage.saveMe(this.code, this.ident);
     storage.setLastName(name);
     this.connect();
@@ -495,6 +664,7 @@ class PlayerSession {
       this.me = msg.pid;
       this.ident.pid = msg.pid;
       storage.saveMe(this.code, this.ident);
+      if (this.game) cloud.linkGame(this.game.id, this.me);
       return;
     }
     if (msg.t === 'err' && !msg.rid) {
@@ -522,7 +692,7 @@ class PlayerSession {
     }
     this.primed = true;
     this.game = next;
-    this.onlineSet = new Set(msg.online || []);
+    if (this.me && next.players.some((p) => p.id === this.me)) cloud.linkGame(next.id, this.me);
     storage.saveSnapshot(next);
     if (next.status === 'ended') storage.recordResult(next);
     notify(this, fresh);
@@ -564,22 +734,69 @@ function notify(s, entries) {
   }
 }
 
-function viewGame(code) {
+function viewGame(code, secret) {
   if (!session) {
     if (storage.isHost(code)) {
       if (!storage.hostedGame(code)) return renderMissing();
-      session = new HostSession(code);
+      // Players only trust a host whose keys are saved to its account.
+      if (!cloud.user()) return viewHostGate();
+      startSession(new HostSession(code));
+    } else if (cloud.user() && !storage.me(code)) {
+      // Maybe it's the signed-in host on a new device (their phone died).
+      renderLoading();
+      const asked = code;
+      cloud.liveHosted(code).then((state) => {
+        if (session || currentCode() !== asked) return;
+        if (state) return offerTakeover(state, secret);
+        startSession(new PlayerSession(code, secret));
+        rerender(session, []);
+      });
+      return;
     } else {
-      session = new PlayerSession(code);
+      startSession(new PlayerSession(code, secret));
     }
-    session.tick = setInterval(() => updateClocks(), 30000);
   }
   rerender(session, []);
 }
 
-function renderMissing() {
+function startSession(s) {
+  session = s;
+  session.tick = setInterval(() => updateClocks(), 30000);
+}
+
+function currentCode() {
+  const [view, arg] = location.hash.replace(/^#\/?/, '').split('/');
+  return view === 'g' ? normalizeCode(arg) : null;
+}
+
+function renderLoading() {
+  app.innerHTML = `<main class="page page--center"><div class="loader" aria-hidden="true"><span></span><span></span><span></span></div></main>`;
+}
+
+function offerTakeover(state, secret) {
+  app.innerHTML = `
+  <main class="page page--center">
+    <h1 class="gate__title">${esc(state.name)}</h1>
+    <p class="hint hint--center">${esc(t('takeover.text'))}</p>
+    <div class="stack stack--tight">
+      <button class="btn btn--primary btn--lg" data-take>${esc(t('takeover.host'))}</button>
+      <button class="btn btn--lg" data-join>${esc(t('takeover.join'))}</button>
+    </div>
+  </main>`;
+  app.querySelector('[data-take]').addEventListener('click', () => {
+    storage.saveHosted(state);
+    startSession(new HostSession(state.code));
+    rerender(session, []);
+  });
+  app.querySelector('[data-join]').addEventListener('click', () => {
+    startSession(new PlayerSession(state.code, secret || state.secret));
+    rerender(session, []);
+  });
+}
+
+function renderMissing(key = 'game.notFound') {
   app.innerHTML = `<main class="page page--center">
-    <p class="hint hint--center">${esc(t('game.notFound'))}</p>
+    <p class="hint hint--center">${esc(t(key))}</p>
     <a class="btn" href="#/">${esc(t('game.goHome'))}</a></main>`;
 }
 
@@ -587,6 +804,7 @@ let renderedSeats = new Map(); // pid -> seat index, to animate only new arrival
 
 function rerender(s, fresh) {
   if (s !== session) return;
+  if (s.missing) return renderMissing('game.gone');
   if (s.role === 'player' && !s.ident) return renderJoin(s);
   if (!s.game) return renderConnecting(s);
   if (s.game.status === 'ended') renderResults(s);
@@ -611,10 +829,19 @@ function renderJoin(s) {
       <p class="eyebrow">${esc(t('join.code', { code: s.code }))}</p>
       <label class="field">
         <span class="field__label">${esc(t('join.name'))}</span>
-        <input class="input input--lg" name="name" value="${esc(storage.lastName())}" maxlength="24" autocomplete="nickname" autofocus required />
+        <input class="input input--lg" name="name" value="${esc(storage.lastName() || cloud.name().split(' ')[0])}" maxlength="24" autocomplete="nickname" autofocus required />
       </label>
       <p class="form__error" data-error role="alert">${esc(s.joinError || '')}</p>
-      <button class="btn btn--primary btn--lg" type="submit">${esc(t('join.go'))}</button>
+      <button class="btn btn--primary btn--lg" type="submit">${esc(t(cloud.user() ? 'join.go' : 'join.guest'))}</button>
+      ${
+        cloud.available()
+          ? cloud.user()
+            ? `<p class="hint hint--center join-acct">${userBadge()}<span>${esc(t('join.signedIn', { name: cloud.name() || cloud.email() }))}</span></p>`
+            : `<div class="or"><span>${esc(t('join.or'))}</span></div>
+               ${googleButton()}
+               <p class="hint hint--center">${esc(t('join.googleWhy'))}</p>`
+          : ''
+      }
     </form>
   </main>`;
   app.querySelector('[data-form="name"]').addEventListener('submit', (e) => {
@@ -717,8 +944,8 @@ function renderTable(s) {
     const style = `style="left:${x.toFixed(2)}%;top:${y.toFixed(2)}%"`;
     if (p) {
       const isNew = renderedSeats.size && renderedSeats.get(p.id) !== i;
-      const off = !isHost && p.id !== g.managerId && !online.has(p.id) && p.clientId;
-      const offHost = isHost && p.clientId && p.id !== g.managerId && !online.has(p.id);
+      const off = !isHost && p.id !== g.managerId && !online.has(p.id) && p.key;
+      const offHost = isHost && p.key && p.id !== g.managerId && !online.has(p.id);
       seats.push(`
         <button class="seat ${p.id === s.me ? 'seat--me' : ''} ${isNew ? 'seat--new' : ''} ${off || offHost ? 'seat--off' : ''}" ${style}
           data-act="player" data-pid="${p.id}" data-seat-pid="${p.id}" aria-label="${esc(p.name)}">
@@ -837,7 +1064,7 @@ function rosterRow(s, p, online) {
   if (p.id === s.me) tags.push(t('game.you'));
   if (p.id === g.managerId) tags.push(t('game.host'));
   if (p.status === 'left') tags.push(t('game.left'));
-  else if (p.clientId && p.id !== g.managerId && !online.has(p.id) && (s.role === 'host' || s.status === 'online')) tags.push(t('game.offline'));
+  else if (p.key && p.id !== g.managerId && !online.has(p.id) && (s.role === 'host' || s.status === 'online')) tags.push(t('game.offline'));
   if (p.status === 'playing' && p.seat === null) tags.push(t('game.rail'));
   if (g.pot && unpaidCents(g, p) > 0) tags.push(t('game.owesPot', { money: m(unpaidCents(g, p), g) }));
   return `
@@ -1159,7 +1386,7 @@ function openLeave(s, pid) {
 }
 
 function openInvite(s) {
-  const url = inviteUrl(s.code);
+  const url = inviteUrl(s.game);
   sheet({
     title: t('invite.title'),
     render: (b) => {
@@ -1189,7 +1416,7 @@ function openInvite(s) {
         }
       });
       b.querySelector('[data-share]')?.addEventListener('click', () => {
-        navigator.share({ title: 'Felt', text: t('invite.shareText', { name: s.game.name }), url }).catch(() => {});
+        navigator.share({ title: 'Chipper', text: t('invite.shareText', { name: s.game.name }), url }).catch(() => {});
       });
     },
   });
@@ -1500,9 +1727,49 @@ async function shareResults(s) {
 
 // ---------------- stats ----------------
 
-function viewStats() {
-  const hist = storage.history();
+let cloudHistory = null; // games from the account, newest first
+
+function historyEntries() {
+  const byId = new Map(storage.history().map((h) => [h.id, h]));
+  for (const g of cloudHistory ?? []) {
+    if (g.status !== 'ended' || !g.state?.result) continue;
+    let res;
+    try {
+      res = gameResults(g.state);
+    } catch {
+      continue;
+    }
+    byId.set(g.id, {
+      id: g.id,
+      me: g.my_player_id,
+      name: g.name,
+      currency: g.currency,
+      startedAt: g.state.createdAt,
+      endedAt: g.state.endedAt,
+      rows: res.map((r) => ({ id: r.id, name: r.name, net: r.net, bought: r.bought })),
+      cloud: true,
+      isHost: g.is_host,
+    });
+  }
+  return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt);
+}
+
+function loadCloudHistory() {
+  if (!cloud.user()) {
+    cloudHistory = null;
+    return Promise.resolve();
+  }
+  return cloud
+    .myGames()
+    .then((rows) => (cloudHistory = rows))
+    .catch(() => toast(t('stats.loadFailed'), { tone: 'error' }));
+}
+
+function viewStats(id, { refetch = true } = {}) {
+  if (id) return viewPastGame(id);
+  const hist = historyEntries();
   const byCurrency = new Map();
+  const mine = new Map(); // currency -> my totals
   for (const h of hist) {
     if (!byCurrency.has(h.currency)) byCurrency.set(h.currency, new Map());
     const board = byCurrency.get(h.currency);
@@ -1514,14 +1781,50 @@ function viewStats() {
       row.best = Math.max(row.best, r.net);
       board.set(key, row);
     }
+    const me = h.me && h.rows.find((r) => r.id === h.me);
+    if (me) {
+      const t0 = mine.get(h.currency) ?? { net: 0, games: 0, wins: 0, best: -Infinity, bought: 0 };
+      t0.net += me.net;
+      t0.games += 1;
+      t0.wins += me.net > 0 ? 1 : 0;
+      t0.best = Math.max(t0.best, me.net);
+      t0.bought += me.bought;
+      mine.set(h.currency, t0);
+    }
   }
+  const signedIn = !!cloud.user();
   app.innerHTML = `
   <main class="page page--form">
     <header class="topbar">
       <a class="icon-btn" href="#/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
       <h1 class="topbar__title">${esc(t('stats.title'))}</h1>
+      ${accountButton()}
       ${langButton()}
     </header>
+    ${
+      !signedIn && cloud.available()
+        ? `<div class="banner banner--accent banner--stack"><span>${esc(t('stats.signInWhy'))}</span>${googleButton('btn--sm')}</div>`
+        : ''
+    }
+    ${
+      [...mine]
+        .map(
+          ([cur, me]) => `
+      <section class="section">
+        <h2 class="eyebrow">${esc(t('stats.you'))}${mine.size > 1 ? ` · ${cur}` : ''}</h2>
+        <div class="mystats">
+          <div class="mystats__big ${me.net > 0 ? 'pos' : me.net < 0 ? 'neg' : ''}">${money(me.net, cur, { sign: true })}</div>
+          <dl class="mystats__grid">
+            <div><dt>${esc(t('stats.played'))}</dt><dd>${me.games}</dd></div>
+            <div><dt>${esc(t('stats.won'))}</dt><dd>${me.wins}</dd></div>
+            <div><dt>${esc(t('stats.best'))}</dt><dd>${money(me.best, cur, { sign: true })}</dd></div>
+            <div><dt>${esc(t('stats.boughtTotal'))}</dt><dd>${money(me.bought, cur)}</dd></div>
+          </dl>
+        </div>
+      </section>`,
+        )
+        .join('')
+    }
     ${
       hist.length
         ? [...byCurrency]
@@ -1545,18 +1848,21 @@ function viewStats() {
       </section>`,
             )
             .join('') +
-          `<section class="section"><h2 class="eyebrow">${esc(t('stats.title'))}</h2><ul class="list">
+          `<section class="section"><h2 class="eyebrow">${esc(t('stats.games2'))}</h2><ul class="list">
           ${hist
             .map((h) => {
               const top = [...h.rows].sort((a, b) => b.net - a.net)[0];
               const pot = h.rows.reduce((sum, r) => sum + r.bought, 0);
-              return `<li class="list-row list-row--static">
-              <span class="list-row__main"><span class="list-row__title">${esc(h.name)}</span>
+              const me = h.me && h.rows.find((r) => r.id === h.me);
+              const main = `<span class="list-row__main"><span class="list-row__title">${esc(h.name)}</span>
               <span class="list-row__sub">${esc(date(h.startedAt))} · ${money(pot, h.currency)}${top && top.net > 0 ? ` · <bdi>${esc(top.name)}</bdi> ${money(top.net, h.currency, { sign: true })}` : ''}</span></span>
-              <button class="btn btn--sm btn--ghost" data-del="${h.id}">${esc(t('stats.delete'))}</button></li>`;
+              ${me ? `<strong class="${me.net > 0 ? 'pos' : me.net < 0 ? 'neg' : ''}">${money(me.net, h.currency, { sign: true })}</strong>` : ''}`;
+              return h.cloud
+                ? `<li><a class="list-row" href="#/stats/${esc(h.id)}">${main} ${ICONS.arrow}</a></li>`
+                : `<li class="list-row list-row--static">${main}<button class="btn btn--sm btn--ghost" data-del="${esc(h.id)}">${esc(t('stats.delete'))}</button></li>`;
             })
             .join('')}</ul></section>`
-        : `<p class="hint hint--center">${esc(t('stats.none'))}</p>`
+        : `<p class="hint hint--center">${esc(t(signedIn && cloudHistory === null ? 'stats.loading' : 'stats.none'))}</p>`
     }
   </main>`;
   app.querySelector('.page').addEventListener('click', (e) => {
@@ -1566,12 +1872,58 @@ function viewStats() {
       viewStats();
     }
   });
+  if (signedIn && refetch) {
+    loadCloudHistory().finally(() => location.hash === '#/stats' && viewStats(undefined, { refetch: false }));
+  }
+}
+
+// One finished game from the account, read-only, with everything in it.
+function viewPastGame(id) {
+  const row = (cloudHistory ?? []).find((g) => g.id === id);
+  if (!row) {
+    if (cloud.user() && cloudHistory === null) {
+      renderLoading();
+      loadCloudHistory().then(() => location.hash === `#/stats/${id}` && viewPastGame(id));
+      return;
+    }
+    return renderMissing();
+  }
+  const viewer = {
+    role: 'viewer',
+    code: row.code,
+    game: row.state,
+    me: row.my_player_id,
+    status: 'online',
+    revealed: row.id,
+    online: () => new Set(),
+    dispatch: () => Promise.reject(new Error('read-only')),
+  };
+  renderResults(viewer);
+  const back = app.querySelector('.gbar .icon-btn');
+  if (back) back.setAttribute('href', '#/stats');
+  if (row.is_host) {
+    const foot = app.querySelector('.page--results .stack');
+    foot?.insertAdjacentHTML('beforeend', `<button class="btn btn--ghost btn--danger-text" data-remove>${esc(t('stats.deleteForAll'))}</button>`);
+  } else {
+    app.querySelector('.page--results .stack')?.insertAdjacentHTML('beforeend', `<button class="btn btn--ghost btn--danger-text" data-remove>${esc(t('stats.delete'))}</button>`);
+  }
+  app.querySelector('[data-remove]')?.addEventListener('click', () => {
+    if (!confirm(t('stats.clearConfirm'))) return;
+    cloud
+      .removeGame(id)
+      .then(() => {
+        storage.deleteHistory(id);
+        cloudHistory = (cloudHistory ?? []).filter((g) => g.id !== id);
+        location.hash = '#/stats';
+      })
+      .catch(() => toast(t('err.generic'), { tone: 'error' }));
+  });
 }
 
 // ---------------- boot ----------------
 
 initLang();
-route();
+initCloud().finally(route);
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});

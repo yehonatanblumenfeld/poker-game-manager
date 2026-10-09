@@ -1,6 +1,6 @@
 {
-  "name": "Felt · Home poker",
-  "short_name": "Felt",
+  "name": "Chipper · Home poker",
+  "short_name": "Chipper",
   "description": "Run your home poker game: invites, buy-ins and the settle-up.",
   "start_url": "./",
   "scope": "./",
