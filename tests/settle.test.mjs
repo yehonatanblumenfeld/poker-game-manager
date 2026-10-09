@@ -305,13 +305,19 @@ test('one seat per account: a second device on the same account gets the same se
   const { accountKey } = await import('../js/store.js');
   const { g } = setup();
   const avi = await accountKey('user-avi');
-  const first = apply(g, 'join', { key: 'a'.repeat(32), acct: avi, name: 'Avi' }, { pid: null, host: false });
+  const pic = 'https://lh3.googleusercontent.com/a/avi=s96-c';
+  const first = apply(g, 'join', { key: 'a'.repeat(32), acct: avi, pic, name: 'Avi' }, { pid: null, host: false });
+  assert.equal(g.players.find((p) => p.id === first.pid).pic, pic);
   const second = apply(g, 'join', { key: 'b'.repeat(32), acct: avi, name: 'Avi 2' }, { pid: null, host: false });
   assert.equal(second.pid, first.pid);
   assert.equal(g.players.length, 2);
   // A guest device with no account still gets its own seat.
-  const guest = apply(g, 'join', { key: 'c'.repeat(32), name: 'Dana' }, { pid: null, host: false });
+  // Photos only come with a checked account, and only from Google.
+  const guest = apply(g, 'join', { key: 'c'.repeat(32), name: 'Dana', pic: 'https://lh3.googleusercontent.com/x' }, { pid: null, host: false });
   assert.notEqual(guest.pid, first.pid);
+  assert.equal(g.players.find((p) => p.id === guest.pid).pic, null);
+  const evil = apply(g, 'join', { key: 'e'.repeat(32), acct: await accountKey('user-eve'), name: 'Eve', pic: 'https://evil.example/x.png' }, { pid: null, host: false });
+  assert.equal(g.players.find((p) => p.id === evil.pid).pic, null);
   // The host's own account maps to the host seat.
   const me = g.players.find((p) => p.id === g.managerId);
   me.acct = await accountKey('user-yoni');

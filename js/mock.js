@@ -108,7 +108,7 @@ export function mockBackend() {
     },
     async signIn() {
       const name = new URLSearchParams(location.search).get('mockName') || 'Test Host';
-      const u = { id: `u-${name.toLowerCase().replace(/\W/g, '')}`, email: `${name.split(' ')[0].toLowerCase()}@example.com`, user_metadata: { full_name: name } };
+      const u = { id: `u-${name.toLowerCase().replace(/\W/g, '')}`, email: `${name.split(' ')[0].toLowerCase()}@example.com`, user_metadata: { full_name: name, avatar_url: `https://lh3.googleusercontent.com/a/u-${name.toLowerCase().replace(/\W/g, '')}=s96-c` } };
       localStorage.setItem(USER_KEY, JSON.stringify(u));
       authCb(u);
     },
