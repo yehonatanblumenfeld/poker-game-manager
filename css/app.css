@@ -698,6 +698,20 @@ select.input {
   outline: 2px solid var(--brass);
 }
 
+.seg--cur .seg__opt span {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.flag {
+  width: 20px;
+  height: 14px;
+  flex: none;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
 .seg--sm .seg__btn {
   min-height: 32px;
   font-size: 13px;
@@ -868,6 +882,27 @@ select.input {
   transition: background-color 160ms ease;
 }
 
+.list-item {
+  display: flex;
+  align-items: center;
+}
+
+.list-item > .list-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item__del {
+  flex: none;
+  margin-inline-end: 6px;
+  color: var(--muted);
+}
+
+.stats-clear {
+  width: 100%;
+  margin-top: 12px;
+}
+
 .list-row--static {
   cursor: default;
 }
@@ -977,15 +1012,6 @@ select.input {
   font-size: 17px;
   font-weight: 600;
   color: var(--brass);
-}
-
-.tip__phone {
-  margin: 4px 0 16px;
-  text-align: center;
-  font-size: 26px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  font-variant-numeric: tabular-nums;
 }
 
 .mini-list {

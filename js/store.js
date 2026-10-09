@@ -441,6 +441,12 @@ export const storage = {
     remove(K.snap(code));
     remove(K.me(code));
   },
+  // Take a game off this device's "Open games" list. A hosted game stays in
+  // the account, so the host can pick it up again from another device.
+  dropLocal(code) {
+    storage.dropHosted(code);
+    storage.forget(code);
+  },
 
   openGames() {
     const out = [];
@@ -451,6 +457,8 @@ export const storage = {
         if (!m) continue;
         const g = read(key);
         if (!g || g.status !== 'live') continue;
+        // Games from older versions (6-letter codes) can't be opened any more.
+        if (m[2].length !== CODE_LENGTH) continue;
         if (m[1] === 'snap' && storage.isHost(m[2])) continue;
         out.push({ role: m[1] === 'game' ? 'host' : 'player', game: g });
       }
