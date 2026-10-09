@@ -72,7 +72,8 @@ function supabaseBackend() {
     async verify(token) {
       const { data, error } = await sb.auth.getUser(token);
       if (error) throw error;
-      return data.user?.id ?? null;
+      const u = data.user;
+      return u ? { id: u.id, pic: u.user_metadata?.avatar_url || u.user_metadata?.picture || '' } : null;
     },
     async signInWithIdToken(token, nonce) {
       const { error } = await sb.auth.signInWithIdToken({ provider: 'google', token, nonce });
@@ -253,7 +254,7 @@ export const cloud = {
     }
   },
 
-  // The account id behind a player's token, or null if it doesn't check out.
+  // The account behind a player's token ({ id, pic }), or null if it doesn't check out.
   async verify(token) {
     if (!client || !token) return null;
     try {

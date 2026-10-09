@@ -55,6 +55,12 @@ export async function accountKey(userId) {
   return [...new Uint8Array(buf, 0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Google profile photos only (they're on googleusercontent.com, which the
+// page's security policy allows).
+export function isPhoto(url) {
+  return /^https:\/\/[a-z0-9-]+\.googleusercontent\.com\/[^\s"'<>]{1,1000}$/.test(String(url || ''));
+}
+
 const isKey = (k) => /^[0-9a-f]{32}$/.test(String(k || ''));
 
 export function cleanName(s) {
@@ -192,15 +198,18 @@ export function apply(game, type, payload, actor) {
       // The host checked the account before passing it on; same account,
       // same seat, from any device.
       const acct = isKey(payload.acct) ? payload.acct : null;
+      const pic = acct && isPhoto(payload.pic) ? payload.pic : null;
       const existing = game.players.find((p) => p.key === key) || (acct && game.players.find((p) => p.acct === acct));
       if (existing) {
         if (acct && !existing.acct) existing.acct = acct;
+        if (pic && existing.acct === acct) existing.pic = pic;
         return { pid: existing.id };
       }
       const name = cleanName(payload.name);
       if (!name) throw new ActionError('name');
       assertFreeName(game, name);
       const p = makePlayer(game, { name, key, acct });
+      p.pic = pic;
       game.players.push(p);
       log(game, 'join', p.id);
       bump(game);
