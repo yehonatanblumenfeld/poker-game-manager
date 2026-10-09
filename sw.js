@@ -1,7 +1,7 @@
 // Offline shell: the app still opens without a connection (players' phones
 // need one to reach the host). Network first, so a deploy shows up at once
 // and the host and players never run different versions.
-const CACHE = 'chipper-v14';
+const CACHE = 'chipper-v15';
 const SHELL = [
   '/',
   '/css/app.css',
@@ -42,7 +42,9 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       try {
-        const res = await fetch(page ? '/' : e.request);
+        // Ask the server every time (GitHub Pages lets browsers reuse files for
+        // 10 minutes), so a new version shows up on the next open.
+        const res = await fetch(page ? '/' : e.request, { cache: 'no-cache' });
         if (res.ok) cache.put(page ? '/' : e.request, res.clone());
         return res;
       } catch {
