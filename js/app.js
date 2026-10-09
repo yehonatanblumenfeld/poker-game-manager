@@ -357,6 +357,29 @@ function viewHostGate() {
   </main>`;
 }
 
+// Currencies a new game can use, each with a small flag.
+const CURRENCIES = ['ILS', 'USD', 'EUR'];
+const flag = (body) => `<svg class="flag" viewBox="0 0 20 14" aria-hidden="true">${body}</svg>`;
+const FLAGS = {
+  ILS: flag(
+    '<rect width="20" height="14" fill="#fff"/><rect y="1.6" width="20" height="1.8" fill="#0038b8"/><rect y="10.6" width="20" height="1.8" fill="#0038b8"/>' +
+      '<g fill="none" stroke="#0038b8" stroke-width=".8"><path d="M10 4.4l2.4 4.1H7.6z"/><path d="M10 9.6L7.6 5.5h4.8z"/></g>',
+  ),
+  USD: flag(
+    '<rect width="20" height="14" fill="#fff"/>' +
+      [0, 2, 4, 6, 8, 10, 12].map((y) => `<rect y="${y * (14 / 13)}" width="20" height="${14 / 13}" fill="#b22234"/>`).join('') +
+      '<rect width="9" height="7.5" fill="#3c3b6e"/>',
+  ),
+  EUR: flag(
+    '<rect width="20" height="14" fill="#039"/><g fill="#fc0">' +
+      Array.from({ length: 12 }, (_, i) => {
+        const a = (i * Math.PI) / 6;
+        return `<circle cx="${(10 + 4.2 * Math.sin(a)).toFixed(2)}" cy="${(7 - 4.2 * Math.cos(a)).toFixed(2)}" r=".6"/>`;
+      }).join('') +
+      '</g>',
+  ),
+};
+
 function viewNew() {
   if (!cloud.user()) return viewHostGate();
   const last = storage.lastName() || cloud.name().split(' ')[0];
@@ -407,18 +430,20 @@ function viewNew() {
         </div>
       </fieldset>
 
-      <div class="field-row">
-        <label class="field field--grow">
-          <span class="field__label" data-buyin-label>${esc(t('new.buyIn'))}</span>
-          <input class="input input--num" name="buyIn" inputmode="decimal" value="${f.buyIn}" dir="ltr" />
-        </label>
-        <label class="field">
-          <span class="field__label">${esc(t('new.currency'))}</span>
-          <select class="input" name="currency">
-            ${['ILS', 'USD', 'EUR', 'GBP'].map((c) => `<option value="${c}" ${c === f.currency ? 'selected' : ''}>${esc(currencySymbol(c))} ${c}</option>`).join('')}
-          </select>
-        </label>
-      </div>
+      <fieldset class="field">
+        <legend class="field__label">${esc(t('new.currency'))}</legend>
+        <div class="seg seg--cur" role="radiogroup">
+          ${CURRENCIES.map(
+            (c) => `<label class="seg__opt"><input type="radio" name="currency" value="${c}" ${c === f.currency ? 'checked' : ''} />
+            <span>${FLAGS[c]}<bdi>${esc(currencySymbol(c))} ${c}</bdi></span></label>`,
+          ).join('')}
+        </div>
+      </fieldset>
+
+      <label class="field">
+        <span class="field__label" data-buyin-label>${esc(t('new.buyIn'))}</span>
+        <input class="input input--num" name="buyIn" inputmode="decimal" value="${f.buyIn}" dir="ltr" />
+      </label>
 
       <fieldset class="field">
         <legend class="field__label">${esc(t('new.chips'))}</legend>

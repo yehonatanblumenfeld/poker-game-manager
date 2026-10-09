@@ -698,6 +698,20 @@ select.input {
   outline: 2px solid var(--brass);
 }
 
+.seg--cur .seg__opt span {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.flag {
+  width: 20px;
+  height: 14px;
+  flex: none;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
 .seg--sm .seg__btn {
   min-height: 32px;
   font-size: 13px;
