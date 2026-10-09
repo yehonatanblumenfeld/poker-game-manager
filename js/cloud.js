@@ -11,8 +11,6 @@
 
 const URL = 'https://nmkqfwzqblfrdftlhkwa.supabase.co';
 const KEY = 'sb_publishable_2KO_VEJgZLvnxGs9p6idGQ_4ke-vxQr';
-// Google OAuth web client (public by design). Empty = redirect sign-in only.
-export const GOOGLE_CLIENT_ID = '282158399922-iftd2v1175n813m99qa4m3cnc2m1niba.apps.googleusercontent.com';
 const AFTER_KEY = 'felt:afterSignIn';
 const LINKED_KEY = 'felt:linked';
 const SAVE_DELAY = 1200;
@@ -74,10 +72,6 @@ function supabaseBackend() {
       if (error) throw error;
       const u = data.user;
       return u ? { id: u.id, pic: u.user_metadata?.avatar_url || u.user_metadata?.picture || '' } : null;
-    },
-    async signInWithIdToken(token, nonce) {
-      const { error } = await sb.auth.signInWithIdToken({ provider: 'google', token, nonce });
-      if (error) throw error;
     },
     async signOut() {
       await sb.auth.signOut();
@@ -165,12 +159,6 @@ export const cloud = {
     params.delete('code');
     const q = params.toString();
     await client.signIn(`${location.origin}${location.pathname}${q ? `?${q}` : ''}`);
-  },
-
-  // Google's own button (js/google.js) hands over a signed ID token.
-  canUseIdToken: () => !!client?.signInWithIdToken,
-  async signInWithIdToken(token, nonce) {
-    await client.signInWithIdToken(token, nonce);
   },
 
   async signOut() {
