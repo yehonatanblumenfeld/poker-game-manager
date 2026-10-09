@@ -114,6 +114,11 @@ function supabaseBackend() {
       if (error) throw error;
       return data || null;
     },
+    async config() {
+      const { data, error } = await sb.from('app_config').select('key, value');
+      if (error) throw error;
+      return Object.fromEntries(data.map((r) => [r.key, r.value]));
+    },
     realtime: sb,
   };
 }
@@ -123,6 +128,7 @@ function supabaseBackend() {
 const pending = new Map(); // game id -> latest row waiting to be saved
 let saveTimer = null;
 let linkTries = new Map();
+let configCache = null;
 
 export const cloud = {
   ready,
@@ -224,6 +230,16 @@ export const cloud = {
     } catch {
       return null;
     }
+  },
+
+  // Owner-edited settings (app_config). Signed-in only.
+  async config() {
+    if (!client || !user) return {};
+    configCache ||= client.config().catch((e) => {
+      configCache = null;
+      throw e;
+    });
+    return configCache;
   },
 
   async removeGame(gameId) {

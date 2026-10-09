@@ -56,6 +56,9 @@ const fns = {
   gameState({ secret }) {
     return latest([...games.values()].filter((g) => g.secret === secret))?.state ?? null;
   },
+  config(_, user) {
+    return user ? { tip_bit_phone: '050-000-0000' } : {};
+  },
   // test helper
   dump() {
     return { games: [...games.values()].map((g) => ({ id: g.id, status: g.status, rev: g.rev, host: g.host_id })), members: [...members.values()] };
