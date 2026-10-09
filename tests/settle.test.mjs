@@ -9,7 +9,7 @@ const { results, transfers, countCheck, roundToTotal, tableTotals, potCents, POT
 const host = { pid: null, host: true };
 
 function setup({ type = 'fixed', buyIn = 10000, chip = { cents: 100, chips: 5 }, pot = false } = {}) {
-  const g = createGame({ name: 'Test', type, currency: 'ILS', buyIn, chip, pot, seats: 9, hostName: 'Yoni', hostPlaying: true, clientId: 'c0' });
+  const g = createGame({ name: 'Test', type, currency: 'ILS', buyIn, chip, pot, seats: 9, hostName: 'Yoni', hostPlaying: true });
   host.pid = g.managerId;
   const add = (name) => {
     apply(g, 'addPlayer', { name }, host);
@@ -116,13 +116,15 @@ test('players can only act for themselves; host-only actions are guarded', () =>
   assert.equal(g.players.find((p) => p.id === a).buyIns.length, 1);
 });
 
-test('seats cannot be double-booked; rejoining by clientId returns the same player', () => {
+test('seats cannot be double-booked; rejoining from the same device returns the same player', () => {
   const { g } = setup();
-  const r1 = apply(g, 'join', { clientId: 'x1', name: 'Avi' }, { pid: null, host: false });
-  const r2 = apply(g, 'join', { clientId: 'x2', name: 'Dana' }, { pid: null, host: false });
+  const r1 = apply(g, 'join', { key: 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', name: 'Avi' }, { pid: null, host: false });
+  const r2 = apply(g, 'join', { key: 'a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2', name: 'Dana' }, { pid: null, host: false });
   apply(g, 'sit', { pid: r1.pid, seat: 3 }, { pid: r1.pid, host: false });
   assert.throws(() => apply(g, 'sit', { pid: r2.pid, seat: 3 }, { pid: r2.pid, host: false }), /seatTaken/);
-  assert.equal(apply(g, 'join', { clientId: 'x1', name: 'Avi' }, { pid: null, host: false }).pid, r1.pid);
+  assert.equal(apply(g, 'join', { key: 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', name: 'Avi' }, { pid: null, host: false }).pid, r1.pid);
+  // Only a hashed device key is accepted, never a raw id.
+  assert.throws(() => apply(g, 'join', { key: 'raw-device-id', name: 'Ben' }, { pid: null, host: false }), /generic/);
 });
 
 const sumBy = (tx, id) => tx.reduce((s, x) => s + (x.to === id ? x.cents : 0) - (x.from === id ? x.cents : 0), 0);
@@ -237,12 +239,23 @@ test('only the host can change whether a buy-in was paid', () => {
 test('names are unique per game, and only the host can rename', () => {
   const { g, add } = setup();
   const a = add('Avi');
-  assert.throws(() => apply(g, 'join', { clientId: 'x9', name: ' avi ' }, { pid: null, host: false }), /nameTaken/);
+  assert.throws(() => apply(g, 'join', { key: 'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9', name: ' avi ' }, { pid: null, host: false }), /nameTaken/);
   assert.throws(() => apply(g, 'addPlayer', { name: 'YONI' }, host), /nameTaken/);
-  const { pid } = apply(g, 'join', { clientId: 'x9', name: 'Dana' }, { pid: null, host: false });
+  const { pid } = apply(g, 'join', { key: 'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9', name: 'Dana' }, { pid: null, host: false });
   assert.throws(() => apply(g, 'rename', { pid, name: 'Dani' }, { pid, host: false }), /notAllowed/);
   assert.throws(() => apply(g, 'rename', { pid, name: 'Avi' }, host), /nameTaken/);
   apply(g, 'rename', { pid: a, name: 'AVI' }, host); // same player, new casing is fine
   apply(g, 'rename', { pid, name: 'Dani' }, host);
   assert.equal(g.players.find((p) => p.id === pid).name, 'Dani');
+});
+
+test('device keys are hashes, and codes and secrets have enough entropy', async () => {
+  const { deviceKey, newCode, newSecret, isSecret, CODE_LENGTH } = await import('../js/store.js');
+  const k = await deviceKey('abc');
+  assert.match(k, /^[0-9a-f]{32}$/);
+  assert.notEqual(k, await deviceKey('abd'));
+  assert.equal(newCode().length, CODE_LENGTH);
+  const sec = newSecret();
+  assert.ok(isSecret(sec) && sec.length === 22);
+  assert.notEqual(sec, newSecret());
 });

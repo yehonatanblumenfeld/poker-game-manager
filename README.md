@@ -6,8 +6,9 @@ English and Hebrew (full right-to-left), mobile first.
 
 ## How it works
 
-- **The host's phone runs the game.** It holds the game and saves it in `localStorage`. Phones talk through two free public MQTT relays at once (EMQX and HiveMQ, over secure WebSockets), so it works on any network, including mobile data. Messages are end-to-end encrypted with a key derived from the game code.
-- **Accounts on Supabase.** Hosts sign in with Google; players can join as guests or sign in too. While a game runs, the host saves it to Supabase, so it can be resumed on another device and ends up in everyone's history. Signed-in players link themselves to the games they sit in. The schema and row-level security rules are in `supabase/migrations/`. Guests never touch the database.
+- **The host's phone runs the game.** Players send it actions; it applies them and broadcasts the table over Supabase Realtime (WebSockets over TLS), one channel per table named after a 128-bit secret that only invitees have. Invite links carry the secret in the URL fragment, which never reaches a server; the 8-character code also works while the game is live.
+- **Nothing on the channel is trusted.** The host signs every table it sends (ECDSA) and players check it against keys saved with the game, which only the signed-in host can write. What a player sends the host is end-to-end encrypted (ECDH + AES-GCM), so other players can't read or forge it. Devices are known by a hash of a private id.
+- **Accounts on Supabase.** Hosts sign in with Google; players join as guests or sign in. The host saves the game as it goes, so it can be resumed on another device and ends up in everyone's history. Schema and row-level security are in `supabase/migrations/`. Guests read a game only through two narrow functions (by secret, or by code while live) and can't touch any table.
 - **End-to-end encrypted.** Messages are AES-GCM encrypted with a key derived from the game code, on a topic derived from it too, so the relays only ever see ciphertext.
 - **The host's screen should stay open.** The relay keeps the latest table, so if the host's phone locks, players still see it; buy-ins wait until the host is back. The app asks the phone to keep the screen awake during a game.
 - **Players rejoin as themselves.** Each phone gets a random id in `localStorage`, so reopening the invite puts you back in your seat with your buy-ins. Use the same browser all night (opening the link in WhatsApp's built-in browser and then in Safari counts as two phones).
@@ -34,7 +35,7 @@ python3 -m http.server 8080   # then open http://localhost:8080
 npm test                      # settle-up and game-rule tests (Node 20+)
 ```
 
-To test against local brokers instead of the public ones, run an MQTT broker with a WebSocket listener and add `?broker=ws://127.0.0.1:8888` (repeatable) to the URL.
+To try several phones without Supabase, `npm i && npm run mock` starts a local stand-in (database + realtime) and `?cloud=mock` points the page at it. The page's Content-Security-Policy only allows the real Supabase, so open it with CSP checks off (Playwright `bypassCSP`) for this.
 
 ## Deploy
 

@@ -9,6 +9,9 @@ import {
   ActionError,
   storage,
   normalizeCode,
+  CODE_LENGTH,
+  isSecret,
+  deviceKey,
   cleanName,
   freeSeats,
   player,
@@ -57,8 +60,9 @@ function langButton() {
   return `<button class="lang-btn" data-act="lang" aria-label="${esc(t('lang.switchLabel'))}">${esc(t('lang.switch'))}</button>`;
 }
 
-function inviteUrl(code) {
-  return `${location.origin}${location.pathname}${location.search}#/g/${code}`;
+// The secret rides in the URL fragment, which browsers never send to a server.
+function inviteUrl(game) {
+  return `${location.origin}${location.pathname}${location.search}#/g/${game.code}/${game.secret}`;
 }
 
 function haptic() {
@@ -150,6 +154,7 @@ function adoptLocalGames() {
 }
 
 cloud.onChange((u) => {
+  closeSheet();
   if (u) adoptLocalGames();
   if (session) rerender(session, []);
   else currentView();
@@ -159,7 +164,7 @@ cloud.onChange((u) => {
 
 function route() {
   const hash = location.hash.replace(/^#\/?/, '');
-  const [view, arg] = hash.split('/');
+  const [view, arg, extra] = hash.split('/');
   const code = normalizeCode(arg);
   if (session && !(view === 'g' && code === session.code)) {
     session.destroy();
@@ -168,7 +173,7 @@ function route() {
   closeSheet();
   window.scrollTo(0, 0);
   if (view === 'new') return show(viewNew);
-  if (view === 'g' && code.length === 6) return show(() => viewGame(code));
+  if (view === 'g' && code.length === CODE_LENGTH) return show(() => viewGame(code, isSecret(extra) ? extra : null));
   if (view === 'stats') return show(() => viewStats(arg));
   return show(viewHome);
 }
@@ -200,7 +205,7 @@ function viewHome() {
       <form class="join-form" data-form="join">
         <label class="sr-only" for="join-code">${esc(t('home.joinPlaceholder'))}</label>
         <input id="join-code" class="input input--code" name="code" placeholder="${esc(t('home.joinPlaceholder'))}"
-          autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="7" dir="ltr" />
+          autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="10" dir="ltr" />
         <button class="btn" type="submit">${esc(t('home.joinGo'))}</button>
       </form>
     </div>
@@ -232,9 +237,9 @@ function viewHome() {
     e.preventDefault();
     const raw = e.target.code.value;
     // Accept a pasted invite link as well as a bare code.
-    const fromLink = raw.match(/#\/g\/(\w+)/);
+    const fromLink = raw.match(/#\/g\/(\w+)(?:\/([\w-]+))?/);
     const code = normalizeCode(fromLink ? fromLink[1] : raw);
-    if (code.length === 6) location.hash = `#/g/${code}`;
+    if (code.length === CODE_LENGTH) location.hash = fromLink?.[2] ? `#/g/${code}/${fromLink[2]}` : `#/g/${code}`;
     else e.target.code.focus();
   });
 }
@@ -278,7 +283,7 @@ function viewHostGate() {
 }
 
 function viewNew() {
-  if (cloud.available() && !cloud.user()) return viewHostGate();
+  if (!cloud.user()) return viewHostGate();
   const last = storage.lastName() || cloud.name().split(' ')[0];
   const f = {
     name: '',
@@ -451,7 +456,7 @@ function viewNew() {
       return;
     }
     storage.setLastName(v.hostName);
-    const game = createGame({ ...v, clientId: storage.clientId() });
+    const game = createGame(v);
     storage.saveHosted(game);
     location.hash = `#/g/${game.code}`;
   });
@@ -468,16 +473,23 @@ class HostSession {
     this.me = this.game.managerId;
     this.status = 'starting';
     this.seen = new Set();
-    this.link = new HostLink(code, {
-      onMessage: (msg, conn) => this.onMessage(msg, conn),
-      onPresence: () => this.changed(null, { quiet: true }),
-      onStatus: (s) => {
-        this.status = s;
+    this.link = new HostLink(cloud.realtime(), this.game.secret, {
+      onMessage: (msg, sid) => this.onMessage(msg, sid),
+      onPresence: () => rerender(this, []),
+      onStatus: (st) => {
+        this.status = st;
         renderStatus(this);
       },
     });
+    // Players only trust the keys saved with the game, so save them first.
+    this.link.ready.then(() => {
+      if (!this.link.anchor) return;
+      this.game.keys = this.link.anchor;
+      storage.saveHosted(this.game);
+      cloud.saveGame(this.game, { now: true });
+      this.link.broadcast({ t: 'state', game: this.game });
+    });
     this.wake();
-    cloud.saveGame(this.game);
     this.onVis = () => document.visibilityState === 'visible' && this.wake();
     document.addEventListener('visibilitychange', this.onVis);
   }
@@ -505,46 +517,49 @@ class HostSession {
   }
 
   replaceGame(game) {
+    game.keys = this.link.anchor ?? game.keys;
     this.game = game;
     this.changed(null, { mine: true });
   }
 
-  onMessage(msg, conn) {
+  async onMessage(msg, sid) {
     if (msg.t === 'hello') {
+      let key;
       try {
-        const { pid } = apply(this.game, 'join', { clientId: String(msg.clientId || ''), name: msg.name }, { pid: null, host: false });
-        this.link.bind(conn, pid);
-        this.link.send(conn, { t: 'welcome', pid });
+        key = await deviceKey(String(msg.clientId || ''));
+        const { pid } = apply(this.game, 'join', { key, name: msg.name }, { pid: null, host: false });
+        this.link.bind(sid, pid);
+        this.link.send(sid, { t: 'welcome', pid });
         const last = this.game.log[this.game.log.length - 1];
         this.changed(last?.type === 'join' && last.pid === pid && !this.seen.has(last.id) ? last : null);
       } catch (e) {
-        this.link.send(conn, { t: 'err', code: e.code || 'generic' });
+        this.link.send(sid, { t: 'err', code: e instanceof ActionError ? e.code : 'generic' });
       }
       return;
     }
     if (msg.t === 'act') {
-      const pid = this.link.pidOf(conn);
+      const pid = this.link.pidOf(sid);
       if (!pid) return;
       try {
         const r = apply(this.game, String(msg.type), { ...(msg.payload || {}) }, { pid, host: false });
-        this.link.send(conn, { t: 'ok', rid: msg.rid });
+        this.link.send(sid, { t: 'ok', rid: msg.rid });
         this.changed(r.entry);
       } catch (e) {
-        this.link.send(conn, { t: 'err', rid: msg.rid, code: e instanceof ActionError ? e.code : 'generic' });
+        this.link.send(sid, { t: 'err', rid: msg.rid, code: e instanceof ActionError ? e.code : 'generic' });
       }
     }
   }
 
-  changed(entry, { mine = false, quiet = false } = {}) {
+  changed(entry, { mine = false } = {}) {
     storage.saveHosted(this.game);
-    if (!quiet) cloud.saveGame(this.game);
+    cloud.saveGame(this.game);
     if (this.game.status === 'ended') storage.recordResult(this.game);
-    this.link.broadcast({ t: 'state', game: this.game, online: this.link.online() });
+    this.link.broadcast({ t: 'state', game: this.game });
     if (entry) {
       this.seen.add(entry.id);
       if (!mine) notify(this, [entry]);
     }
-    if (!quiet || this.game) rerender(this, entry ? [entry] : []);
+    rerender(this, entry ? [entry] : []);
   }
 
   destroy() {
@@ -556,29 +571,69 @@ class HostSession {
 }
 
 class PlayerSession {
-  constructor(code) {
+  // `secret` comes from the invite link, from this device, or from the code.
+  constructor(code, secret) {
     this.role = 'player';
     this.code = code;
     this.game = storage.snapshot(code);
     this.ident = storage.me(code);
     this.me = this.ident?.pid ?? null;
+    this.secret = secret || this.ident?.secret || this.game?.secret || null;
     this.status = 'connecting';
-    this.onlineSet = new Set();
+    this.start();
+  }
+
+  async start() {
+    if (!this.secret) {
+      try {
+        this.secret = await cloud.findGame(this.code);
+      } catch {}
+      if (this !== session) return;
+      if (!this.secret) {
+        this.missing = true;
+        return rerender(this, []);
+      }
+    }
+    // The table as the host last saved it: shows up even if the host's
+    // phone is asleep, and vouches for the host's keys.
+    const saved = await this.fetchSaved();
+    if (this !== session) return;
+    if (saved && (!this.game || this.game.id !== saved.id || saved.rev > this.game.rev)) {
+      this.game = saved;
+      storage.saveSnapshot(saved);
+    }
+    if (!this.game) {
+      this.missing = true;
+      return rerender(this, []);
+    }
     if (this.ident) this.connect();
+    rerender(this, []);
+  }
+
+  async fetchSaved() {
+    try {
+      return await cloud.gameState(this.secret);
+    } catch {
+      return null;
+    }
   }
 
   online() {
-    return this.onlineSet;
+    return this.link?.online() ?? new Set();
   }
 
   connect() {
-    this.link = new PlayerLink(this.code, {
+    if (!cloud.realtime()) return;
+    this.link = new PlayerLink(cloud.realtime(), this.secret, {
       hello: () => ({ clientId: this.ident.clientId, name: this.ident.name }),
-      onStatus: (s) => {
+      anchor: this.game?.keys,
+      trust: () => this.fetchSaved().then((g) => g?.keys),
+      onPresence: () => this.game && rerender(this, []),
+      onStatus: (st) => {
         const could = this.status === 'online';
-        this.status = s;
+        this.status = st;
         // Action buttons depend on whether the host is reachable.
-        if (could !== (s === 'online') && this.game) rerender(this, []);
+        if (could !== (st === 'online') && this.game) rerender(this, []);
         else renderStatus(this);
       },
       onMessage: (msg) => this.onMessage(msg),
@@ -586,7 +641,7 @@ class PlayerSession {
   }
 
   join(name) {
-    this.ident = { clientId: storage.clientId(), name, pid: null };
+    this.ident = { clientId: storage.clientId(), name, pid: null, secret: this.secret };
     storage.saveMe(this.code, this.ident);
     storage.setLastName(name);
     this.connect();
@@ -627,7 +682,6 @@ class PlayerSession {
     this.primed = true;
     this.game = next;
     if (this.me && next.players.some((p) => p.id === this.me)) cloud.linkGame(next.id, this.me);
-    this.onlineSet = new Set(msg.online || []);
     storage.saveSnapshot(next);
     if (next.status === 'ended') storage.recordResult(next);
     notify(this, fresh);
@@ -669,10 +723,12 @@ function notify(s, entries) {
   }
 }
 
-function viewGame(code) {
+function viewGame(code, secret) {
   if (!session) {
     if (storage.isHost(code)) {
       if (!storage.hostedGame(code)) return renderMissing();
+      // Players only trust a host whose keys are saved to its account.
+      if (!cloud.user()) return viewHostGate();
       startSession(new HostSession(code));
     } else if (cloud.user() && !storage.me(code)) {
       // Maybe it's the signed-in host on a new device (their phone died).
@@ -680,13 +736,13 @@ function viewGame(code) {
       const asked = code;
       cloud.liveHosted(code).then((state) => {
         if (session || currentCode() !== asked) return;
-        if (state) return offerTakeover(state);
-        startSession(new PlayerSession(code));
+        if (state) return offerTakeover(state, secret);
+        startSession(new PlayerSession(code, secret));
         rerender(session, []);
       });
       return;
     } else {
-      startSession(new PlayerSession(code));
+      startSession(new PlayerSession(code, secret));
     }
   }
   rerender(session, []);
@@ -706,7 +762,7 @@ function renderLoading() {
   app.innerHTML = `<main class="page page--center"><div class="loader" aria-hidden="true"><span></span><span></span><span></span></div></main>`;
 }
 
-function offerTakeover(state) {
+function offerTakeover(state, secret) {
   app.innerHTML = `
   <main class="page page--center">
     <h1 class="gate__title">${esc(state.name)}</h1>
@@ -722,14 +778,14 @@ function offerTakeover(state) {
     rerender(session, []);
   });
   app.querySelector('[data-join]').addEventListener('click', () => {
-    startSession(new PlayerSession(state.code));
+    startSession(new PlayerSession(state.code, secret || state.secret));
     rerender(session, []);
   });
 }
 
-function renderMissing() {
+function renderMissing(key = 'game.notFound') {
   app.innerHTML = `<main class="page page--center">
-    <p class="hint hint--center">${esc(t('game.notFound'))}</p>
+    <p class="hint hint--center">${esc(t(key))}</p>
     <a class="btn" href="#/">${esc(t('game.goHome'))}</a></main>`;
 }
 
@@ -737,6 +793,7 @@ let renderedSeats = new Map(); // pid -> seat index, to animate only new arrival
 
 function rerender(s, fresh) {
   if (s !== session) return;
+  if (s.missing) return renderMissing('game.gone');
   if (s.role === 'player' && !s.ident) return renderJoin(s);
   if (!s.game) return renderConnecting(s);
   if (s.game.status === 'ended') renderResults(s);
@@ -876,8 +933,8 @@ function renderTable(s) {
     const style = `style="left:${x.toFixed(2)}%;top:${y.toFixed(2)}%"`;
     if (p) {
       const isNew = renderedSeats.size && renderedSeats.get(p.id) !== i;
-      const off = !isHost && p.id !== g.managerId && !online.has(p.id) && p.clientId;
-      const offHost = isHost && p.clientId && p.id !== g.managerId && !online.has(p.id);
+      const off = !isHost && p.id !== g.managerId && !online.has(p.id) && p.key;
+      const offHost = isHost && p.key && p.id !== g.managerId && !online.has(p.id);
       seats.push(`
         <button class="seat ${p.id === s.me ? 'seat--me' : ''} ${isNew ? 'seat--new' : ''} ${off || offHost ? 'seat--off' : ''}" ${style}
           data-act="player" data-pid="${p.id}" data-seat-pid="${p.id}" aria-label="${esc(p.name)}">
@@ -996,7 +1053,7 @@ function rosterRow(s, p, online) {
   if (p.id === s.me) tags.push(t('game.you'));
   if (p.id === g.managerId) tags.push(t('game.host'));
   if (p.status === 'left') tags.push(t('game.left'));
-  else if (p.clientId && p.id !== g.managerId && !online.has(p.id) && (s.role === 'host' || s.status === 'online')) tags.push(t('game.offline'));
+  else if (p.key && p.id !== g.managerId && !online.has(p.id) && (s.role === 'host' || s.status === 'online')) tags.push(t('game.offline'));
   if (p.status === 'playing' && p.seat === null) tags.push(t('game.rail'));
   if (g.pot && unpaidCents(g, p) > 0) tags.push(t('game.owesPot', { money: m(unpaidCents(g, p), g) }));
   return `
@@ -1318,7 +1375,7 @@ function openLeave(s, pid) {
 }
 
 function openInvite(s) {
-  const url = inviteUrl(s.code);
+  const url = inviteUrl(s.game);
   sheet({
     title: t('invite.title'),
     render: (b) => {

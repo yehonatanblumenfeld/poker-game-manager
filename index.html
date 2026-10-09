@@ -2,6 +2,11 @@
 <html lang="en" dir="ltr">
   <head>
     <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://nmkqfwzqblfrdftlhkwa.supabase.co wss://nmkqfwzqblfrdftlhkwa.supabase.co; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'"
+    />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0b100e" />
     <meta name="color-scheme" content="dark" />
@@ -19,7 +24,6 @@
       href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@1,9..144,600,100,1&family=Rubik:wght@400;500;600&display=swap"
     />
     <link rel="stylesheet" href="css/app.css" />
-    <script src="vendor/mqtt.min.js" defer></script>
     <script src="vendor/qrcode.js" defer></script>
     <script src="vendor/supabase.js" defer></script>
     <script type="module" src="js/app.js"></script>

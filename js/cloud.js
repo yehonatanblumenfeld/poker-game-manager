@@ -13,7 +13,7 @@ const URL = 'https://nmkqfwzqblfrdftlhkwa.supabase.co';
 const KEY = 'sb_publishable_2KO_VEJgZLvnxGs9p6idGQ_4ke-vxQr';
 const AFTER_KEY = 'felt:afterSignIn';
 const LINKED_KEY = 'felt:linked';
-const SAVE_DELAY = 700;
+const SAVE_DELAY = 1200;
 
 const listeners = new Set();
 let client = null;
@@ -98,72 +98,17 @@ function supabaseBackend() {
       if (error) throw error;
       await sb.from('game_members').delete().eq('game_id', gameId).eq('user_id', user.id);
     },
-  };
-}
-
-// ---------- a stand-in for tests (?cloud=mock), kept in localStorage ----------
-
-function mockBackend() {
-  const K = 'felt:mock';
-  const db = () => JSON.parse(localStorage.getItem(K) || '{"user":null,"games":{},"members":{}}');
-  const put = (d) => localStorage.setItem(K, JSON.stringify(d));
-  let cb = () => {};
-  return {
-    async session() {
-      return db().user;
+    async findGame(code) {
+      const { data, error } = await sb.rpc('find_game', { p_code: code });
+      if (error) throw error;
+      return data || null;
     },
-    onAuth(fn) {
-      cb = fn;
+    async gameState(secret) {
+      const { data, error } = await sb.rpc('game_state', { p_secret: secret });
+      if (error) throw error;
+      return data || null;
     },
-    async signIn() {
-      const d = db();
-      const name = new URLSearchParams(location.search).get('mockName') || 'Test Host';
-      d.user = { id: 'u-' + name.toLowerCase().replace(/\W/g, ''), email: 'test@example.com', user_metadata: { full_name: name } };
-      put(d);
-      cb(d.user);
-    },
-    async signOut() {
-      const d = db();
-      d.user = null;
-      put(d);
-      cb(null);
-    },
-    async save(row) {
-      const d = db();
-      const old = d.games[row.id];
-      if (old && row.rev < old.rev) return;
-      d.games[row.id] = { ...row, host_id: d.user.id };
-      put(d);
-    },
-    async link(gameId, pid) {
-      const d = db();
-      d.members[`${gameId}|${d.user.id}`] = { game_id: gameId, user_id: d.user.id, player_id: pid };
-      put(d);
-      return true;
-    },
-    async myGames() {
-      const d = db();
-      const uid = d.user?.id;
-      return Object.values(d.games)
-        .map((g) => {
-          const mem = d.members[`${g.id}|${uid}`];
-          const isHost = g.host_id === uid;
-          if (!isHost && !mem) return null;
-          return { ...g, is_host: isHost, my_player_id: mem?.player_id ?? (isHost ? g.state.managerId : null) };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
-    },
-    async liveHosted(code) {
-      const d = db();
-      const g = Object.values(d.games).find((x) => x.code === code && x.status === 'live' && x.host_id === d.user?.id);
-      return g?.state ?? null;
-    },
-    async remove(gameId) {
-      const d = db();
-      delete d.games[gameId];
-      put(d);
-    },
+    realtime: sb,
   };
 }
 
@@ -204,12 +149,14 @@ export const cloud = {
   },
 
   // Called on every change while hosting. Saves are batched and retried, so
-  // a flaky connection never blocks the table.
-  saveGame(game) {
-    if (!client || !user) return;
+  // a flaky connection never blocks the table. `now` skips the batching.
+  saveGame(game, { now = false } = {}) {
+    // Games from before accounts (no secret, short code) stay on the device.
+    if (!client || !user || !game.secret || game.code?.length !== 8) return;
     pending.set(game.id, {
       id: game.id,
       code: game.code,
+      secret: game.secret,
       name: game.name,
       currency: game.currency,
       status: game.status,
@@ -219,7 +166,18 @@ export const cloud = {
       ended_at: game.endedAt ? new Date(game.endedAt).toISOString() : null,
     });
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(flush, SAVE_DELAY);
+    saveTimer = setTimeout(flush, now ? 0 : SAVE_DELAY);
+  },
+
+  // Live channel access, for js/net.js.
+  realtime: () => client?.realtime ?? null,
+
+  async findGame(code) {
+    return client ? client.findGame(code) : null;
+  },
+
+  async gameState(secret) {
+    return client ? client.gameState(secret) : null;
   },
 
   // A signed-in player puts this game in their history. The host may not
@@ -262,15 +220,21 @@ export const cloud = {
   },
 };
 
+const failures = new Map(); // game id -> failed attempts in a row
+
 async function flush() {
   const rows = [...pending.values()];
   pending.clear();
   for (const row of rows) {
     try {
       await client.save(row);
+      failures.delete(row.id);
     } catch {
-      // Keep the newest copy and try again shortly.
-      if (!pending.has(row.id)) pending.set(row.id, row);
+      // Keep the newest copy and try again shortly, but don't hammer the
+      // server forever over a save it keeps refusing.
+      const n = (failures.get(row.id) || 0) + 1;
+      failures.set(row.id, n);
+      if (n < 20 && !pending.has(row.id)) pending.set(row.id, row);
     }
   }
   if (pending.size) saveTimer = setTimeout(flush, 5000);
@@ -285,9 +249,10 @@ document.addEventListener('visibilitychange', () => {
 });
 
 export async function initCloud() {
+  // ?cloud=mock swaps in a local stand-in (tests only; see tests/e2e).
   const mock = new URLSearchParams(location.search).get('cloud') === 'mock';
   try {
-    client = mock ? mockBackend() : supabaseBackend();
+    client = mock ? (await import('./mock.js')).mockBackend() : supabaseBackend();
   } catch {
     client = null;
   }

@@ -1,7 +1,7 @@
 // Offline shell: the app still opens without a connection (players' phones
 // need one to reach the host). Network first, so a deploy shows up at once
 // and the host and players never run different versions.
-const CACHE = 'felt-v4';
+const CACHE = 'felt-v5';
 const SHELL = [
   './',
   'index.html',
@@ -13,7 +13,6 @@ const SHELL = [
   'js/settle.js',
   'js/store.js',
   'js/ui.js',
-  'vendor/mqtt.min.js',
   'vendor/qrcode.js',
   'vendor/supabase.js',
   'icons/icon.svg',

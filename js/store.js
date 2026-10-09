@@ -12,8 +12,12 @@ export function uid(len = 10) {
   return Array.from(bytes, (b) => (b % 36).toString(36)).join('');
 }
 
+// 8 characters from a 31-letter alphabet: ~8.5e11 codes, so guessing a live
+// one by brute force isn't practical. Ambiguous letters (0/O, 1/I/L) are out.
+export const CODE_LENGTH = 8;
+
 export function newCode() {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  const bytes = crypto.getRandomValues(new Uint8Array(CODE_LENGTH));
   return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
 }
 
@@ -21,7 +25,27 @@ export function normalizeCode(s) {
   return String(s || '')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
-    .slice(0, 6);
+    .slice(0, CODE_LENGTH);
+}
+
+// 128 random bits, URL-safe. Names the live channel and rides in invite links.
+export function newSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+export function isSecret(s) {
+  return /^[A-Za-z0-9_-]{22,64}$/.test(String(s || ''));
+}
+
+// A device is recognised by a hash of its private id, so the id itself never
+// appears in the shared table (anyone holding it could act as that player).
+export async function deviceKey(clientId) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`felt-device:${clientId}`));
+  return [...new Uint8Array(buf, 0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export function cleanName(s) {
@@ -44,10 +68,10 @@ function nextColor(game) {
   return COLORS.find((c) => !used.has(c)) ?? COLORS[game.players.length % COLORS.length];
 }
 
-function makePlayer(game, { name, clientId = null, playing = true }) {
+function makePlayer(game, { name, key = null, playing = true }) {
   return {
     id: uid(8),
-    clientId,
+    key,
     name,
     color: nextColor(game),
     seat: null,
@@ -67,6 +91,7 @@ export function createGame(opts) {
     v: 1,
     id: uid(12),
     code: opts.code ?? newCode(),
+    secret: opts.secret ?? newSecret(),
     name: cleanName(opts.name) || 'Poker',
     type: opts.type === 'cash' ? 'cash' : 'fixed',
     currency: opts.currency || 'ILS',
@@ -85,7 +110,7 @@ export function createGame(opts) {
     result: null,
     rev: 0,
   };
-  const host = makePlayer(game, { name: cleanName(opts.hostName) || 'Host', clientId: opts.clientId, playing: !!opts.hostPlaying });
+  const host = makePlayer(game, { name: cleanName(opts.hostName) || 'Host', playing: !!opts.hostPlaying });
   if (host.playing) host.seat = 0;
   game.managerId = host.id;
   game.players.push(host);
@@ -149,12 +174,14 @@ export function apply(game, type, payload, actor) {
 
   switch (type) {
     case 'join': {
-      const existing = game.players.find((p) => p.clientId && p.clientId === payload.clientId);
+      const key = String(payload.key || '');
+      if (!/^[0-9a-f]{32}$/.test(key)) throw new ActionError('generic');
+      const existing = game.players.find((p) => p.key === key);
       if (existing) return { pid: existing.id };
       const name = cleanName(payload.name);
       if (!name) throw new ActionError('name');
       assertFreeName(game, name);
-      const p = makePlayer(game, { name, clientId: payload.clientId });
+      const p = makePlayer(game, { name, key });
       game.players.push(p);
       log(game, 'join', p.id);
       bump(game);
