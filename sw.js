@@ -1,12 +1,13 @@
 // Offline shell: the app still opens without a connection (players' phones
 // need one to reach the host). Network first, so a deploy shows up at once
 // and the host and players never run different versions.
-const CACHE = 'chipper-v17';
+const CACHE = 'chipper-v18';
 const SHELL = [
   '/',
   '/css/app.css',
   '/js/app.js',
   '/js/cloud.js',
+  '/js/fx.js',
   '/js/i18n.js',
   '/js/net.js',
   '/js/settle.js',
@@ -19,6 +20,16 @@ const SHELL = [
   '/icons/icon-512.png',
   '/icons/icon-maskable-512.png',
   '/manifest.webmanifest',
+  '/fonts/suez-one-hebrew.woff2',
+  '/fonts/suez-one-latin.woff2',
+  '/fonts/plex-hebrew-400.woff2',
+  '/fonts/plex-hebrew-500.woff2',
+  '/fonts/plex-hebrew-600.woff2',
+  '/fonts/plex-latin-400.woff2',
+  '/fonts/plex-latin-500.woff2',
+  '/fonts/plex-latin-600.woff2',
+  '/fonts/plex-figures-700.woff2',
+  '/fonts/fraunces-wordmark.woff2',
 ];
 
 self.addEventListener('install', (e) => {

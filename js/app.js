@@ -1,5 +1,6 @@
 import { t, initLang, setLang, lang, money, chips, duration, clock, date, currencySymbol } from './i18n.js';
 import { esc, toast, sheet, closeSheet, floatLabel, ICONS } from './ui.js';
+import { playMoves, chipShower, play, soundEnabled, setSound } from './fx.js';
 import { HostLink, PlayerLink } from './net.js';
 import { cloud, initCloud } from './cloud.js';
 import {
@@ -62,6 +63,14 @@ function avatar(p, size = '') {
   return `<span class="avatar avatar--${p.color} ${size}" aria-hidden="true">${inner}</span>`;
 }
 
+const SPEAKER_ON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 010 6M18 6.5a7.5 7.5 0 010 11"/></svg>';
+const SPEAKER_OFF = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
+
+function soundButton() {
+  const on = soundEnabled();
+  return `<button class="icon-btn icon-btn--quiet" data-act="sound" aria-pressed="${on}" aria-label="${esc(t(on ? 'sound.off' : 'sound.on'))}">${on ? SPEAKER_ON : SPEAKER_OFF}</button>`;
+}
+
 function langButton() {
   return `<button class="lang-btn" data-act="lang" aria-label="${esc(t('lang.switchLabel'))}">${esc(t('lang.switch'))}</button>`;
 }
@@ -82,6 +91,11 @@ document.addEventListener('click', (e) => {
     setLang(lang() === 'he' ? 'en' : 'he');
     closeSheet();
     currentView();
+  }
+  const snd = e.target.closest('[data-act="sound"]');
+  if (snd) {
+    setSound(!soundEnabled());
+    snd.outerHTML = soundButton();
   }
   if (e.target.closest('[data-act="account"]')) openAccount();
   if (e.target.closest('[data-act="signin"]')) openSignIn();
@@ -255,7 +269,9 @@ function show(fn) {
 function go(path, { replace = false } = {}) {
   const [p, h] = path.split('#');
   history[replace ? 'replaceState' : 'pushState'](null, '', `${p}${location.search}${h ? `#${h}` : ''}`);
-  route();
+  // A short crossfade between screens, where the browser supports it.
+  if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.startViewTransition(route);
+  else route();
 }
 
 // Links to the app's own screens change the path without reloading the page.
@@ -1091,6 +1107,14 @@ function rerender(s, fresh) {
       floatLabel(app.querySelector(`[data-seat-pid="${e.pid}"]`), `+${m(e.cents, s.game)}`);
     }
   }
+  if (fresh.length) {
+    playMoves(app, s.game, fresh, (c) => m(c, s.game));
+    // The game just ended: chips rain in the colours of whoever came out ahead.
+    if (s.game.status === 'ended' && fresh.some((e) => e.type === 'end')) {
+      const up = gameResults(s.game).filter((r) => r.net > 0).map((r) => player(s.game, r.id)?.color).filter(Boolean);
+      chipShower(up.length ? up : s.game.players.map((p) => p.color));
+    }
+  }
 }
 
 function renderJoin(s) {
@@ -1196,6 +1220,7 @@ function gameHeader(s, sub) {
       <h1>${esc(s.game.name)}</h1>
       <p><span class="dot" data-status-dot data-tone="${statusTone(s)}"></span>${sub}</p>
     </div>
+    ${soundButton()}
     ${langButton()}
   </header>
   <div class="banner banner--warn" data-conn-banner ${statusTone(s) === 'bad' || (s.role === 'player' && s.status !== 'online') ? '' : 'hidden'}><span>${esc(statusText(s))}</span>${
@@ -1280,7 +1305,7 @@ function renderTable(s) {
         <div class="table__rail"><div class="table__felt">
           <div class="pot">
             <span class="pot__label">${esc(t(g.pot ? 'game.pot' : 'game.bought'))}</span>
-            <strong class="pot__value">${m(g.pot ? potCents(g) : totals.cents, g)}</strong>
+            <strong class="pot__value" data-cents="${g.pot ? potCents(g) : totals.cents}">${m(g.pot ? potCents(g) : totals.cents, g)}</strong>
             ${g.pot && totals.cents > potCents(g) ? `<span class="pot__chips">${esc(t('game.onCredit', { money: m(totals.cents - potCents(g), g) }))}</span>` : ''}
             <span class="pot__chips">${esc(t('game.chipsInPlay', { chips: chips(totals.onTable) }))}</span>
           </div>
