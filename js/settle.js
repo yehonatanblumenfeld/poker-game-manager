@@ -98,43 +98,91 @@ export function results(game, stacks, { adjust = false } = {}) {
   });
 }
 
-// Who pays whom. `fewest` greedily matches the biggest loser with the biggest
-// winner, which needs at most n-1 payments. `bank` routes everything through
-// the manager, which is how many home games already handle cash.
-// Players marked settledOnLeave already squared up with the manager, so their
-// net moves onto the manager's books.
+// ---------------- the pot ----------------
+
+// The cash box on the table. Buy-ins paid in cash go into it; buy-ins "on
+// credit" don't. Old games without the flag count as unpaid.
+export const POT = 'pot';
+
+export function isPaid(game, buy) {
+  return buy.paid ?? false;
+}
+
+export function paidCents(game, player) {
+  return player.buyIns.reduce((sum, b) => sum + (isPaid(game, b) ? b.cents : 0), 0);
+}
+
+export function unpaidCents(game, player) {
+  return boughtCents(player) - paidCents(game, player);
+}
+
+export function potCents(game) {
+  return game.players.reduce((sum, p) => sum + paidCents(game, p), 0);
+}
+
+// What a player still has coming once they put `paid` in the pot: the value
+// of their chips minus any buy-ins they took on credit. Negative means they
+// still owe that much.
+export function dueCents(game, player, cashOut) {
+  return cashOut - unpaidCents(game, player);
+}
+
+// Who pays whom. Every mode starts from the same balances: each player is due
+// cashOut - unpaid, and the pot has to hand out everything that was paid in,
+// so the books always sum to zero.
+//   pot:    everyone settles with the cash box (take out / put in).
+//   fewest: greedy biggest-owes-biggest matching, the pot counting as one
+//           more "player" that owes its cash; at most n-1 payments.
+//   bank:   everyone settles with the host, who holds the pot cash.
+// Players marked settledOnLeave already squared up when they left (with the
+// pot, or with the host in a game without one), so their balance moves there.
 export function transfers(game, res, mode = 'fewest') {
-  const net = new Map(res.map((r) => [r.id, r.net]));
   const managerId = game.managerId;
+  const bal = new Map();
+  for (const r of res) {
+    const p = game.players.find((x) => x.id === r.id);
+    bal.set(r.id, dueCents(game, p, r.cashOut));
+  }
+  bal.set(POT, -potCents(game));
+
+  const early = game.pot ? POT : managerId;
   const settled = [];
   for (const p of game.players) {
-    if (p.settledOnLeave && net.has(p.id) && p.id !== managerId) {
-      const n = net.get(p.id);
-      if (n !== 0) {
-        settled.push(n < 0 ? { from: p.id, to: managerId, cents: -n, early: true } : { from: managerId, to: p.id, cents: n, early: true });
-      }
-      net.set(managerId, (net.get(managerId) ?? 0) + n);
-      net.set(p.id, 0);
+    if (p.settledOnLeave && bal.has(p.id) && p.id !== early) {
+      const n = bal.get(p.id);
+      if (n !== 0) settled.push(n < 0 ? { from: p.id, to: early, cents: -n, early: true } : { from: early, to: p.id, cents: n, early: true });
+      bal.set(early, (bal.get(early) ?? 0) + n);
+      bal.set(p.id, 0);
     }
   }
 
   const list = [];
-  if (mode === 'bank') {
-    for (const [id, n] of net) {
-      if (id === managerId || n === 0) continue;
-      list.push(n < 0 ? { from: id, to: managerId, cents: -n } : { from: managerId, to: id, cents: n });
+  if (mode === 'pot' || mode === 'bank') {
+    let hub = POT;
+    if (mode === 'bank') {
+      // The host is holding the cash box.
+      hub = managerId;
+      bal.set(hub, (bal.get(hub) ?? 0) + bal.get(POT));
+      bal.delete(POT);
     }
-    list.sort((a, b) => b.cents - a.cents);
+    for (const [id, n] of bal) {
+      if (id === hub || n === 0) continue;
+      list.push(n < 0 ? { from: id, to: hub, cents: -n } : { from: hub, to: id, cents: n });
+    }
+    // Money in first, then pay-outs, biggest first.
+    list.sort((a, b) => (b.to === hub) - (a.to === hub) || b.cents - a.cents);
     return [...settled, ...list];
   }
 
   const debtors = [];
   const creditors = [];
-  for (const [id, n] of net) {
+  for (const [id, n] of bal) {
     if (n < 0) debtors.push({ id, left: -n });
     else if (n > 0) creditors.push({ id, left: n });
   }
-  debtors.sort((a, b) => b.left - a.left);
+  // The pot pays first: it's cash already on the table.
+  const order = (a, b) => (b.id === POT) - (a.id === POT) || b.left - a.left;
+  debtors.sort(order);
   creditors.sort((a, b) => b.left - a.left);
   let i = 0;
   let j = 0;

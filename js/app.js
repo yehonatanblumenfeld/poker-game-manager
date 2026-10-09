@@ -13,7 +13,7 @@ import {
   player,
   gameResults,
 } from './store.js';
-import { boughtCents, boughtChips, tableTotals, centsForChips, chipsForCents, countCheck, results, transfers, transferKey } from './settle.js';
+import { boughtCents, boughtChips, tableTotals, centsForChips, chipsForCents, countCheck, results, transfers, transferKey, POT, potCents, unpaidCents, dueCents, isPaid } from './settle.js';
 
 const app = document.getElementById('app');
 let session = null;
@@ -22,7 +22,7 @@ let currentView = () => {};
 // ---------------- helpers ----------------
 
 const m = (cents, g = session?.game, opts) => money(cents, g?.currency ?? 'ILS', opts);
-const nameOf = (g, id) => player(g, id)?.name ?? '—';
+const nameOf = (g, id) => (id === POT ? t('res.potName') : player(g, id)?.name ?? '—');
 const initials = (name) =>
   name
     .split(' ')
@@ -216,6 +216,16 @@ function viewNew() {
         </div>
       </fieldset>
 
+      <fieldset class="field">
+        <legend class="field__label">${esc(t('new.money'))}</legend>
+        <div class="choice">
+          <label class="choice__opt"><input type="radio" name="money" value="pot" checked />
+            <span><strong>${esc(t('new.pot'))}</strong><small>${esc(t('new.potHint'))}</small></span></label>
+          <label class="choice__opt"><input type="radio" name="money" value="end" />
+            <span><strong>${esc(t('new.atEnd'))}</strong><small>${esc(t('new.atEndHint'))}</small></span></label>
+        </div>
+      </fieldset>
+
       <div class="field-row">
         <label class="field field--grow">
           <span class="field__label" data-buyin-label>${esc(t('new.buyIn'))}</span>
@@ -290,6 +300,7 @@ function viewNew() {
     return {
       name: fd.get('name') || t('new.namePlaceholder'),
       type: fd.get('type'),
+      pot: fd.get('money') !== 'end',
       currency: fd.get('currency'),
       buyIn,
       chip,
@@ -487,6 +498,15 @@ class PlayerSession {
       return;
     }
     if (msg.t === 'err' && !msg.rid) {
+      if (msg.code === 'nameTaken' && !this.me) {
+        // Someone at the table already has this name: pick another.
+        this.link?.close();
+        this.link = null;
+        this.ident = null;
+        storage.saveMe(this.code, null);
+        this.joinError = t('err.nameTaken');
+        return rerender(this, []);
+      }
       toast(t(`err.${msg.code || 'generic'}`), { tone: 'error' });
       return;
     }
@@ -593,7 +613,7 @@ function renderJoin(s) {
         <span class="field__label">${esc(t('join.name'))}</span>
         <input class="input input--lg" name="name" value="${esc(storage.lastName())}" maxlength="24" autocomplete="nickname" autofocus required />
       </label>
-      <p class="form__error" data-error role="alert"></p>
+      <p class="form__error" data-error role="alert">${esc(s.joinError || '')}</p>
       <button class="btn btn--primary btn--lg" type="submit">${esc(t('join.go'))}</button>
     </form>
   </main>`;
@@ -604,6 +624,7 @@ function renderJoin(s) {
       app.querySelector('[data-error]').textContent = t('err.name');
       return;
     }
+    s.joinError = '';
     s.join(name);
   });
 }
@@ -686,12 +707,13 @@ function renderTable(s) {
   const isHost = s.role === 'host';
   const canAct = isHost || s.status === 'online';
   const seated = new Map(g.players.filter((p) => p.status === 'playing' && p.seat !== null).map((p) => [p.seat, p]));
-  const rotate = me?.seat ?? 0;
 
   const seats = [];
   for (let i = 0; i < g.seats; i++) {
     const p = seated.get(i);
-    const { x, y } = seatPosition((i - rotate + g.seats) % g.seats, g.seats);
+    // Fixed layout: seat 1 is at the bottom for everyone, so the table looks
+    // the same on every phone (no turning it to put the viewer at the bottom).
+    const { x, y } = seatPosition(i, g.seats);
     const style = `style="left:${x.toFixed(2)}%;top:${y.toFixed(2)}%"`;
     if (p) {
       const isNew = renderedSeats.size && renderedSeats.get(p.id) !== i;
@@ -733,8 +755,9 @@ function renderTable(s) {
       <div class="table ${g.seats > 8 ? 'table--crowded' : ''}">
         <div class="table__rail"><div class="table__felt">
           <div class="pot">
-            <span class="pot__label">${esc(t('game.pot'))}</span>
-            <strong class="pot__value">${m(totals.cents, g)}</strong>
+            <span class="pot__label">${esc(t(g.pot ? 'game.pot' : 'game.bought'))}</span>
+            <strong class="pot__value">${m(g.pot ? potCents(g) : totals.cents, g)}</strong>
+            ${g.pot && totals.cents > potCents(g) ? `<span class="pot__chips">${esc(t('game.onCredit', { money: m(totals.cents - potCents(g), g) }))}</span>` : ''}
             <span class="pot__chips">${esc(t('game.chipsInPlay', { chips: chips(totals.onTable) }))}</span>
           </div>
         </div></div>
@@ -782,14 +805,17 @@ function renderTable(s) {
 function meCard(s, me) {
   const g = s.game;
   if (me.status === 'left') {
-    const net = Math.round(centsForChips(g, me.leftChips) - boughtCents(me));
+    const worth = Math.round(centsForChips(g, me.leftChips));
+    const net = worth - boughtCents(me);
+    const due = dueCents(g, me, worth);
     return `
     <section class="me me--left">
       ${avatar(me, 'avatar--lg')}
       <div class="me__main">
         <p class="me__big ${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${esc(net > 0 ? t('you.up', { money: m(net, g) }) : net < 0 ? t('you.down', { money: m(-net, g) }) : t('you.even'))}</p>
         <p class="me__sub">${esc(t('you.leftWith', { chips: chips(me.leftChips) }))}</p>
-        <p class="me__sub">${esc(me.settledOnLeave ? t('you.settledEarly') : t('you.finalAtEnd'))}</p>
+        ${g.pot ? `<p class="me__sub">${esc(due >= 0 ? t('you.potTake', { money: m(due, g) }) : t('you.potPut', { money: m(-due, g) }))}</p>` : ''}
+        <p class="me__sub">${esc(me.settledOnLeave ? t(g.pot ? 'you.settledPot' : 'you.settledEarly') : t('you.finalAtEnd'))}</p>
       </div>
     </section>`;
   }
@@ -800,6 +826,7 @@ function meCard(s, me) {
       <p class="me__label">${esc(t('game.you'))}${me.seat !== null ? ` · ${esc(t('player.seat'))} ${me.seat + 1}` : ''}</p>
       <p class="me__big">${me.buyIns.length ? m(boughtCents(me), g) : esc(t('game.noBuyIns'))}</p>
       ${me.buyIns.length ? `<p class="me__sub">${esc(t('game.buyIns', { n: buyInCount(g, me) }))} · ${esc(t('common.chips', { chips: chips(boughtChips(me)) }))}</p>` : ''}
+      ${g.pot && unpaidCents(g, me) > 0 ? `<p class="me__sub neg">${esc(t('game.owesPot', { money: m(unpaidCents(g, me), g) }))}</p>` : ''}
     </div>
   </section>`;
 }
@@ -812,6 +839,7 @@ function rosterRow(s, p, online) {
   if (p.status === 'left') tags.push(t('game.left'));
   else if (p.clientId && p.id !== g.managerId && !online.has(p.id) && (s.role === 'host' || s.status === 'online')) tags.push(t('game.offline'));
   if (p.status === 'playing' && p.seat === null) tags.push(t('game.rail'));
+  if (g.pot && unpaidCents(g, p) > 0) tags.push(t('game.owesPot', { money: m(unpaidCents(g, p), g) }));
   return `
   <li><button class="list-row ${p.status === 'left' ? 'is-left' : ''}" data-act="player" data-pid="${p.id}">
     ${avatar(p)}
@@ -922,7 +950,14 @@ function openPlayer(s, pid) {
               (b) => `<li>
             <span class="mini-list__time">${esc(clock(b.at))}</span>
             <span class="mini-list__main">${m(b.cents, g)} · ${esc(t('common.chips', { chips: chips(b.chips) }))}</span>
-            ${isHost ? `<button class="btn btn--sm btn--ghost" data-undo="${b.id}">${esc(t('player.undo'))}</button>` : ''}
+            ${
+              g.pot
+                ? isHost
+                  ? `<button class="tag-btn ${isPaid(g, b) ? 'is-paid' : 'is-credit'}" data-paid="${b.id}" aria-pressed="${isPaid(g, b)}">${esc(t(isPaid(g, b) ? 'buyin.paid' : 'buyin.credit'))}</button>`
+                  : `<span class="tag-btn ${isPaid(g, b) ? 'is-paid' : 'is-credit'}">${esc(t(isPaid(g, b) ? 'buyin.paid' : 'buyin.credit'))}</span>`
+                : ''
+            }
+            ${isHost && g.status !== 'ended' ? `<button class="btn btn--sm btn--ghost" data-undo="${b.id}">${esc(t('player.undo'))}</button>` : ''}
           </li>`,
             )
             .join('')}
@@ -943,7 +978,7 @@ function openPlayer(s, pid) {
       </div>
       ${
         isHost && p.status === 'left' && p.id !== g.managerId
-          ? `<label class="switch"><input type="checkbox" data-do="settled" ${p.settledOnLeave ? 'checked' : ''}/><span class="switch__track" aria-hidden="true"></span><span>${esc(t('leave.settleNow'))}</span></label>`
+          ? `<label class="switch"><input type="checkbox" data-do="settled" ${p.settledOnLeave ? 'checked' : ''}/><span class="switch__track" aria-hidden="true"></span><span>${esc(t(g.pot ? 'leave.settlePot' : 'leave.settleNow'))}</span></label>`
           : ''
       }
       ${
@@ -958,11 +993,15 @@ function openPlayer(s, pid) {
           </select></label>`
           : ''
       }
-      <form class="field-row" data-do="rename">
+      ${
+        isHost
+          ? `<form class="field-row" data-do="rename">
         <label class="field field--grow"><span class="field__label">${esc(t('player.rename'))}</span>
           <input class="input" name="name" value="${esc(p.name)}" maxlength="24" /></label>
         <button class="btn btn--sm field-row__btn" type="submit">${esc(t('player.save'))}</button>
-      </form>
+      </form>`
+          : ''
+      }
       ${isHost && p.id !== g.managerId && !p.buyIns.length ? `<button class="btn btn--ghost btn--danger-text" data-do="remove">${esc(t('player.remove'))}</button>` : ''}
       `
           : ''
@@ -976,6 +1015,8 @@ function openPlayer(s, pid) {
       body = b;
       draw();
       b.addEventListener('click', (e) => {
+        const paidBtn = e.target.closest('[data-paid]');
+        if (paidBtn) return s.dispatch('paidBuyin', { pid, buyinId: paidBtn.dataset.paid, value: paidBtn.getAttribute('aria-pressed') !== 'true' });
         const undo = e.target.closest('[data-undo]');
         if (undo) return s.dispatch('undoBuyin', { pid, buyinId: undo.dataset.undo }).then(() => toast(t('player.undone')));
         const act = e.target.closest('[data-do]')?.dataset.do;
@@ -991,7 +1032,9 @@ function openPlayer(s, pid) {
       });
       b.addEventListener('submit', (e) => {
         e.preventDefault();
-        s.dispatch('rename', { pid, name: e.target.name.value }).catch(() => {});
+        s.dispatch('rename', { pid, name: e.target.name.value })
+          .then(() => toast(t('player.renamed')))
+          .catch(() => {});
       });
     },
   });
@@ -1015,6 +1058,7 @@ function openBuyIn(s, pid) {
           <button type="button" class="icon-btn" data-step="1" aria-label="+">${ICONS.plus}</button>
         </div>
         <p class="preview preview--center" data-gets></p>
+        ${g.pot ? `<label class="switch"><input type="checkbox" name="paid" checked/><span class="switch__track" aria-hidden="true"></span><span>${esc(t('buyin.paidSwitch'))}<small>${esc(t('buyin.paidHint'))}</small></span></label>` : ''}
         <button class="btn btn--primary btn--lg" data-confirm></button>`
         : `
         <label class="field">
@@ -1028,6 +1072,7 @@ function openBuyIn(s, pid) {
             .join('')}
         </div>
         <p class="preview" data-gets></p>
+        ${g.pot ? `<label class="switch"><input type="checkbox" name="paid" checked/><span class="switch__track" aria-hidden="true"></span><span>${esc(t('buyin.paidSwitch'))}<small>${esc(t('buyin.paidHint'))}</small></span></label>` : ''}
         <button class="btn btn--primary btn--lg" data-confirm></button>`;
       const cents = () => (fixed ? count * g.buyIn : parseMoney(b.querySelector('[name="amount"]').value));
       const sync = () => {
@@ -1055,7 +1100,8 @@ function openBuyIn(s, pid) {
         if (go && !go.disabled) {
           go.disabled = true;
           haptic();
-          s.dispatch('buyin', { pid, cents: cents() })
+          const paidBox = b.querySelector('[name="paid"]');
+          s.dispatch('buyin', { pid, cents: cents(), ...(paidBox ? { paid: paidBox.checked } : {}) })
             .then(() => close())
             .catch(() => (go.disabled = false));
         }
@@ -1081,8 +1127,8 @@ function openLeave(s, pid) {
         <div class="leave-sum" data-sum aria-live="polite"></div>
         ${
           isHost && pid !== g.managerId
-            ? `<label class="switch"><input type="checkbox" name="settled"/><span class="switch__track" aria-hidden="true"></span>
-               <span>${esc(t('leave.settleNow'))}<small>${esc(t('leave.settleNowHint'))}</small></span></label>`
+            ? `<label class="switch"><input type="checkbox" name="settled" ${g.pot && g.type === 'cash' ? 'checked' : ''}/><span class="switch__track" aria-hidden="true"></span>
+               <span>${esc(t(g.pot ? 'leave.settlePot' : 'leave.settleNow'))}<small>${esc(t(g.pot ? 'leave.settlePotHint' : 'leave.settleNowHint'))}</small></span></label>`
             : ''
         }
         <button class="btn btn--primary btn--lg" data-confirm disabled>${esc(t('leave.confirm'))}</button>`;
@@ -1094,9 +1140,11 @@ function openLeave(s, pid) {
         if (!ok) return (b.querySelector('[data-sum]').innerHTML = '');
         const worth = Math.round(centsForChips(g, c));
         const net = worth - boughtCents(p);
+        const due = dueCents(g, p, worth);
         b.querySelector('[data-sum]').innerHTML = `
           <span>${esc(t('leave.worth', { money: m(worth, g) }))}</span>
-          <strong class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${m(net, g, { sign: true })}</strong>`;
+          <strong class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${m(net, g, { sign: true })}</strong>
+          ${g.pot ? `<span class="leave-sum__pot">${esc(due >= 0 ? t('leave.potTake', { money: m(due, g) }) : t('leave.potPut', { money: m(-due, g) }))}</span>` : ''}`;
       };
       input.addEventListener('input', sync);
       b.querySelector('[data-confirm]').addEventListener('click', (e) => {
@@ -1322,10 +1370,9 @@ function renderResults(s) {
           ${
             mine.length
               ? mine
-                  .map((x) =>
-                    x.early && x.from !== g.managerId && x.to !== g.managerId
-                      ? ''
-                      : `<li>${esc(x.from === me ? t('you.pay', { name: nameOf(g, x.to), money: m(x.cents, g) }) : t('you.get', { name: nameOf(g, x.from), money: m(x.cents, g) }))}${x.early ? ` <small>(${esc(t('res.early'))})</small>` : ''}${g.result.paid[transferKey(x)] ? ` <span class="badge">${esc(t('res.paid'))}</span>` : ''}</li>`,
+                  .map(
+                    (x) =>
+                      `<li>${esc(myLine(g, x, me))}${x.early ? ` <small>(${esc(t('res.early'))})</small>` : ''}${g.result.paid[transferKey(x)] ? ` <span class="badge">${esc(t('res.paid'))}</span>` : ''}</li>`,
                   )
                   .join('')
               : `<li>${esc(t('you.nothing'))}</li>`
@@ -1344,7 +1391,7 @@ function renderResults(s) {
           ${avatar(player(g, r.id))}
           <span class="results__main">
             <span class="results__name"><bdi>${esc(r.name)}</bdi>${r.id === me ? ` <small>· ${esc(t('game.you'))}</small>` : ''}</span>
-            <span class="results__sub">${esc(t('res.bought', { money: m(r.bought, g) }))} · ${esc(t('res.out', { money: m(r.cashOut, g) }))} · ${esc(t('common.chips', { chips: chips(r.chips) }))}</span>
+            <span class="results__sub">${esc(t('res.bought', { money: m(r.bought, g) }))} · ${esc(t('res.out', { money: m(r.cashOut, g) }))} · ${esc(t('common.chips', { chips: chips(r.chips) }))}${g.pot && unpaidCents(g, player(g, r.id)) > 0 ? ` · <span class="neg">${esc(t('res.credit', { money: m(unpaidCents(g, player(g, r.id)), g) }))}</span>` : ''}</span>
           </span>
           <strong class="results__net ${r.net > 0 ? 'pos' : r.net < 0 ? 'neg' : ''}">${m(r.net, g, { sign: true })}</strong>
         </li>`,
@@ -1357,15 +1404,16 @@ function renderResults(s) {
     <section class="section">
       <div class="section__head">
         <h2 class="eyebrow">${esc(t('res.payments'))}</h2>
-        ${
-          isHost
-            ? `<div class="seg seg--sm" role="group">
-          <button class="seg__btn" data-act="mode" data-mode="fewest" aria-pressed="${mode === 'fewest'}">${esc(t('res.fewest'))}</button>
-          <button class="seg__btn" data-act="mode" data-mode="bank" aria-pressed="${mode === 'bank'}">${esc(t('res.bank'))}</button>
-        </div>`
-            : `<span class="hint">${esc(t(mode === 'bank' ? 'res.bank' : 'res.fewest'))}</span>`
-        }
+        ${isHost ? '' : `<span class="hint">${esc(t(`res.mode.${mode}`))}</span>`}
       </div>
+      ${
+        isHost
+          ? `<div class="seg seg--sm seg--modes" role="group" aria-label="${esc(t('res.payments'))}">
+        ${['pot', 'fewest', 'bank'].map((k) => `<button class="seg__btn" data-act="mode" data-mode="${k}" aria-pressed="${mode === k}">${esc(t(`res.mode.${k}`))}</button>`).join('')}
+      </div>`
+          : ''
+      }
+      <p class="hint pay-hint">${esc(t(`res.modeHint.${mode}`))}${potLine(g)}</p>
       ${
         list.length
           ? `<ul class="payments">
@@ -1408,6 +1456,19 @@ function renderResults(s) {
   bindGame(s);
 }
 
+function potLine(g) {
+  if (!g.pot) return '';
+  const unpaid = g.players.reduce((sum, p) => sum + unpaidCents(g, p), 0);
+  return ` ${esc(t('res.potHeld', { money: m(potCents(g), g) }))}${unpaid > 0 ? ` ${esc(t('res.potCredit', { money: m(unpaid, g) }))}` : ''}`;
+}
+
+// One line of the viewer's own settle-up.
+function myLine(g, x, me) {
+  if (x.to === POT) return t('you.potPut', { money: m(x.cents, g) });
+  if (x.from === POT) return t('you.potTake', { money: m(x.cents, g) });
+  return x.from === me ? t('you.pay', { name: nameOf(g, x.to), money: m(x.cents, g) }) : t('you.get', { name: nameOf(g, x.from), money: m(x.cents, g) });
+}
+
 async function shareResults(s) {
   const g = s.game;
   const res = gameResults(g).sort((a, b) => b.net - a.net);
@@ -1417,7 +1478,7 @@ async function shareResults(s) {
     '',
     ...res.map((r) => `${r.name}: ${m(r.net, g, { sign: true })}`),
     '',
-    `${t('res.payments')}:`,
+    `${t('res.payments')} (${t(`res.mode.${g.result.mode}`)}):`,
     ...(list.length ? list.map((x) => `${nameOf(g, x.from)} → ${nameOf(g, x.to)}: ${m(x.cents, g)}${x.early ? ` (${t('res.early')})` : ''}`) : [t('res.allSquare')]),
   ];
   const text = lines.join('\n');

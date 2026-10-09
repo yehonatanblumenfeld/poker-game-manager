@@ -1491,6 +1491,7 @@ select.input {
 
 .leave-sum {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
   min-height: 28px;
@@ -1500,6 +1501,47 @@ select.input {
 .leave-sum strong {
   font-size: 22px;
   font-weight: 600;
+}
+
+.leave-sum__pot {
+  flex-basis: 100%;
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* paid / on-credit marker on a buy-in */
+.tag-btn {
+  flex: none;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 12px;
+  line-height: 26px;
+  background: transparent;
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    transform 160ms var(--ease-out);
+}
+
+button.tag-btn {
+  cursor: pointer;
+}
+
+button.tag-btn:active {
+  transform: scale(0.96);
+}
+
+.tag-btn.is-paid {
+  color: var(--pos);
+  background: rgba(130, 214, 160, 0.12);
+}
+
+.tag-btn.is-credit {
+  color: var(--neg);
+  border-color: rgba(242, 142, 120, 0.4);
 }
 
 /* invite */
@@ -2003,4 +2045,13 @@ span.check {
   from {
     opacity: 0;
   }
+}
+
+/* settle-up mode picker */
+.seg--modes {
+  margin-bottom: 8px;
+}
+
+.pay-hint {
+  margin: 0 0 12px;
 }
