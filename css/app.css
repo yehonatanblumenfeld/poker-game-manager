@@ -2359,3 +2359,111 @@ span.check {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Names carry their own direction (dir="auto") so a long English name in the
+   Hebrew layout is cut at its end, while still lining up with the page. */
+.seat__name,
+.pcard__name,
+.count-list__name,
+.results__name {
+  text-align: match-parent;
+}
+
+.link-row--btn {
+  width: 100%;
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.steps {
+  margin: 0 0 8px;
+  padding-inline-start: 22px;
+  display: grid;
+  gap: 10px;
+  line-height: 1.5;
+}
+
+/* ---------------- admin ---------------- */
+
+.page--admin {
+  padding-bottom: 48px;
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.kpi {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.kpi__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.kpi__value {
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi__sub {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.chart__title {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: 120px;
+  padding: 8px;
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.chart rect {
+  fill: var(--brass);
+}
+
+.chart--blue rect {
+  fill: #5b8def;
+}
+
+.chart--green rect {
+  fill: #4fae7e;
+}
+
+.chart__axis {
+  display: flex;
+  padding: 4px 8px 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.chart__axis span {
+  text-align: center;
+  overflow: visible;
+  white-space: nowrap;
+}
+

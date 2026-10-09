@@ -67,7 +67,7 @@ function langButton() {
 
 // The secret rides in the URL fragment, which browsers never send to a server.
 function inviteUrl(game) {
-  return `${location.origin}${location.pathname}${location.search}#/g/${game.code}/${game.secret}`;
+  return `${location.origin}/game/${game.code}#${game.secret}`;
 }
 
 function haptic() {
@@ -147,7 +147,7 @@ function googleButton(cls = '') {
 
 function googleSignIn() {
   if (!cloud.available()) return toast(t('auth.unavailable'), { tone: 'error' });
-  cloud.signIn(location.hash || '#/').catch(() => toast(t('auth.failed'), { tone: 'error' }));
+  cloud.signIn(location.pathname + location.hash).catch(() => toast(t('auth.failed'), { tone: 'error' }));
 }
 
 function userBadge() {
@@ -184,24 +184,32 @@ function openAccount() {
         <div class="pcard">
           ${userBadge().replace('acct__pic', 'acct__pic acct__pic--lg')}
           <div>
-            <p class="pcard__name"><bdi>${esc(cloud.name() || cloud.email())}</bdi></p>
+            <p class="pcard__name" dir="auto">${esc(cloud.name() || cloud.email())}</p>
             <p class="pcard__sub" dir="ltr">${esc(cloud.email())}</p>
           </div>
         </div>
-        <a class="btn btn--lg" href="#/stats">${esc(t('home.history'))}</a>
+        <a class="btn btn--lg" href="/history">${esc(t('home.history'))}</a>
+        <a class="btn btn--lg" href="/admin" data-admin hidden>${esc(t('admin.title'))}</a>
         <button class="btn btn--ghost btn--danger-text" data-signout>${esc(t('auth.signOut'))}</button>`;
       b.querySelector('[data-signout]').addEventListener('click', () => {
         cloud.signOut().finally(() => close());
       });
-      b.querySelector('a').addEventListener('click', () => close());
+      b.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => close()));
+      cloud.isAdmin().then((yes) => {
+        const link = b.querySelector('[data-admin]');
+        if (yes && link) link.hidden = false;
+      });
     },
   });
 }
 
 // When someone signs in, everything they already did on this device joins
 // their account: games they hosted are saved, games they joined are linked.
+// Done once per account on each device, so games deleted later don't come back.
 function adoptLocalGames() {
-  if (!cloud.user()) return;
+  const u = cloud.user();
+  if (!u || storage.adopted(u.id)) return;
+  storage.markAdopted(u.id);
   const { hosted, joined } = storage.allLocal();
   for (const g of hosted) cloud.saveGame(g);
   // Linking needs the host's save to land first; give it a moment.
@@ -217,19 +225,23 @@ cloud.onChange((u) => {
 
 // ---------------- router ----------------
 
+// Screens live at clean paths: /, /new, /game/CODE, /history, /history/ID.
+// An invite adds the game's secret after the #, which browsers never send to
+// a server. GitHub Pages serves 404.html (a copy of index.html) for any path.
 function route() {
-  const hash = location.hash.replace(/^#\/?/, '');
-  const [view, arg, extra] = hash.split('/');
+  const [, view, arg] = location.pathname.split('/');
   const code = normalizeCode(arg);
-  if (session && !(view === 'g' && code === session.code)) {
+  const secret = location.hash.slice(1);
+  if (session && !(view === 'game' && code === session.code)) {
     session.destroy();
     session = null;
   }
   closeSheet();
   window.scrollTo(0, 0);
   if (view === 'new') return show(viewNew);
-  if (view === 'g' && code.length === CODE_LENGTH) return show(() => viewGame(code, isSecret(extra) ? extra : null));
-  if (view === 'stats') return show(() => viewStats(arg));
+  if (view === 'game' && code.length === CODE_LENGTH) return show(() => viewGame(code, isSecret(secret) ? secret : null));
+  if (view === 'history') return show(() => viewStats(arg));
+  if (view === 'admin') return show(viewAdmin);
   return show(viewHome);
 }
 
@@ -238,9 +250,70 @@ function show(fn) {
   fn();
 }
 
-window.addEventListener('hashchange', route);
+// Go to a screen. Query flags (like ?lang) stay; the # part is the path's own.
+function go(path, { replace = false } = {}) {
+  const [p, h] = path.split('#');
+  history[replace ? 'replaceState' : 'pushState'](null, '', `${p}${location.search}${h ? `#${h}` : ''}`);
+  route();
+}
+
+// Links to the app's own screens change the path without reloading the page.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href^="/"]');
+  if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || a.target) return;
+  e.preventDefault();
+  if (a.getAttribute('href') !== location.pathname) go(a.getAttribute('href'));
+});
+window.addEventListener('popstate', route);
+
+// Links from before the clean paths (#/g/CODE/SECRET, #/stats, #/new).
+function upgradeOldUrl() {
+  const old = location.hash.match(/^#\/(\w*)\/?([\w-]*)\/?([\w-]*)/);
+  if (!old) return;
+  const [, view, arg, extra] = old;
+  const path =
+    view === 'g' && arg ? `/game/${arg}${extra ? `#${extra}` : ''}` : view === 'stats' ? `/history${arg ? `/${arg}` : ''}` : view === 'new' ? '/new' : '/';
+  const [p, h] = path.split('#');
+  history.replaceState(null, '', `${p}${location.search}${h ? `#${h}` : ''}`);
+}
 
 // ---------------- home ----------------
+
+// ---------------- install (PWA) ----------------
+
+let installPrompt = null; // Chrome/Android's install offer, kept for our button
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  if (location.pathname === '/') currentView();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  if (location.pathname === '/') currentView();
+});
+
+function canInstall() {
+  return !standalone() && (installPrompt || isIOS());
+}
+
+async function install() {
+  if (installPrompt) {
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    return currentView();
+  }
+  // iPhone has no install prompt: show how to add it from Safari's Share menu.
+  sheet({
+    title: t('install.title'),
+    render: (b) => {
+      b.innerHTML = `<ol class="steps"><li>${esc(t('install.ios1'))}</li><li>${esc(t('install.ios2'))}</li><li>${esc(t('install.ios3'))}</li></ol>`;
+    },
+  });
+}
 
 function viewHome() {
   const open = storage.openGames();
@@ -255,7 +328,7 @@ function viewHome() {
       <p class="hero__tag">${esc(t('app.tagline'))}</p>
     </section>
     <div class="stack stack--tight">
-      <a class="btn btn--primary btn--lg" href="#/new">${esc(t('home.new'))}</a>
+      <a class="btn btn--primary btn--lg" href="/new">${esc(t('home.new'))}</a>
       <form class="join-form" data-form="join">
         <label class="sr-only" for="join-code">${esc(t('home.joinPlaceholder'))}</label>
         <input id="join-code" class="input input--code" name="code" placeholder="${esc(t('home.joinPlaceholder'))}"
@@ -271,7 +344,7 @@ function viewHome() {
           ${open
             .map(
               ({ role, game }) => `
-            <li class="list-item"><a class="list-row" href="#/g/${game.code}">
+            <li class="list-item"><a class="list-row" href="/game/${game.code}">
               <span class="list-row__main">
                 <span class="list-row__title">${esc(game.name)}</span>
                 <span class="list-row__sub">${esc(role === 'host' ? t('home.hosting') : t('home.playing'))} · <span dir="ltr">${game.code}</span> · ${esc(clock(game.createdAt))}</span>
@@ -284,8 +357,10 @@ function viewHome() {
       </section>`
         : `<p class="hint hint--center">${esc(t('home.empty'))}</p>`
     }
-    <a class="link-row" href="#/stats">${esc(t('home.history'))} ${ICONS.arrow}</a>
+    <a class="link-row" href="/history">${esc(t('home.history'))} ${ICONS.arrow}</a>
+    ${canInstall() ? `<button class="link-row link-row--btn" data-install>${esc(t('install.button'))}</button>` : ''}
   </main>`;
+  app.querySelector('[data-install]')?.addEventListener('click', install);
 
   app.querySelectorAll('[data-drop]').forEach((btn) =>
     btn.addEventListener('click', () => {
@@ -300,9 +375,9 @@ function viewHome() {
     e.preventDefault();
     const raw = e.target.code.value;
     // Accept a pasted invite link as well as a bare code.
-    const fromLink = raw.match(/#\/g\/(\w+)(?:\/([\w-]+))?/);
+    const fromLink = raw.match(/\/game\/(\w+)(?:#([\w-]+))?/) || raw.match(/#\/g\/(\w+)(?:\/([\w-]+))?/);
     const code = normalizeCode(fromLink ? fromLink[1] : raw);
-    if (code.length === CODE_LENGTH) location.hash = fromLink?.[2] ? `#/g/${code}/${fromLink[2]}` : `#/g/${code}`;
+    if (code.length === CODE_LENGTH) go(fromLink?.[2] ? `/game/${code}#${fromLink[2]}` : `/game/${code}`);
     else e.target.code.focus();
   });
 }
@@ -343,7 +418,7 @@ function viewHostGate() {
   app.innerHTML = `
   <main class="page page--form">
     <header class="topbar">
-      <a class="icon-btn" href="#/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <a class="icon-btn" href="/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
       <h1 class="topbar__title">${esc(t('new.title'))}</h1>
       ${langButton()}
     </header>
@@ -400,7 +475,7 @@ function viewNew() {
   app.innerHTML = `
   <main class="page page--form">
     <header class="topbar">
-      <a class="icon-btn" href="#/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <a class="icon-btn" href="/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
       <h1 class="topbar__title">${esc(t('new.title'))}</h1>
       ${langButton()}
     </header>
@@ -558,7 +633,7 @@ function viewNew() {
     storage.setLastName(v.hostName);
     const game = createGame(v);
     storage.saveHosted(game);
-    location.hash = `#/g/${game.code}`;
+    go(`/game/${game.code}`, { replace: true });
   });
   sync();
 }
@@ -860,8 +935,8 @@ function startSession(s) {
 }
 
 function currentCode() {
-  const [view, arg] = location.hash.replace(/^#\/?/, '').split('/');
-  return view === 'g' ? normalizeCode(arg) : null;
+  const [, view, arg] = location.pathname.split('/');
+  return view === 'game' ? normalizeCode(arg) : null;
 }
 
 function renderLoading() {
@@ -892,7 +967,7 @@ function offerTakeover(state, secret) {
 function renderMissing(key = 'game.notFound') {
   app.innerHTML = `<main class="page page--center">
     <p class="hint hint--center">${esc(t(key))}</p>
-    <a class="btn" href="#/">${esc(t('game.goHome'))}</a></main>`;
+    <a class="btn" href="/">${esc(t('game.goHome'))}</a></main>`;
 }
 
 let renderedSeats = new Map(); // pid -> seat index, to animate only new arrivals
@@ -916,7 +991,7 @@ function renderJoin(s) {
   app.innerHTML = `
   <main class="page page--form">
     <header class="topbar">
-      <a class="icon-btn" href="#/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <a class="icon-btn" href="/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
       <h1 class="topbar__title">${esc(t('join.title'))}</h1>
       ${langButton()}
     </header>
@@ -956,7 +1031,7 @@ function renderConnecting(s) {
   <main class="page page--center">
     <div class="loader" aria-hidden="true"><span></span><span></span><span></span></div>
     <p class="hint hint--center" data-status-text>${esc(statusText(s))}</p>
-    <a class="btn btn--ghost" href="#/">${esc(t('game.goHome'))}</a>
+    <a class="btn btn--ghost" href="/">${esc(t('game.goHome'))}</a>
   </main>`;
 }
 
@@ -1003,7 +1078,7 @@ function updateClocks() {
 function gameHeader(s, sub) {
   return `
   <header class="gbar">
-    <a class="icon-btn" href="#/" aria-label="${esc(t('game.goHome'))}">${ICONS.back}</a>
+    <a class="icon-btn" href="/" aria-label="${esc(t('game.goHome'))}">${ICONS.back}</a>
     <div class="gbar__title">
       <h1>${esc(s.game.name)}</h1>
       <p><span class="dot" data-status-dot data-tone="${statusTone(s)}"></span>${sub}</p>
@@ -1045,7 +1120,7 @@ function renderTable(s) {
         <button class="seat ${p.id === s.me ? 'seat--me' : ''} ${isNew ? 'seat--new' : ''} ${off || offHost ? 'seat--off' : ''}" ${style}
           data-act="player" data-pid="${p.id}" data-seat-pid="${p.id}" aria-label="${esc(p.name)}">
           ${avatar(p)}
-          <span class="seat__name"><bdi>${esc(p.name)}</bdi></span>
+          <span class="seat__name" dir="auto">${esc(p.name)}</span>
           ${p.buyIns.length ? `<span class="seat__amt">${m(boughtCents(p), g)}</span>` : ''}
         </button>`);
     } else {
@@ -1255,7 +1330,7 @@ function openPlayer(s, pid) {
       <div class="pcard">
         ${avatar(p, 'avatar--lg')}
         <div>
-          <p class="pcard__name"><bdi>${esc(p.name)}</bdi></p>
+          <p class="pcard__name" dir="auto">${esc(p.name)}</p>
           <p class="pcard__sub">${esc(t('player.bought'))}: <strong>${p.buyIns.length ? m(boughtCents(p), g) : '—'}</strong>${p.buyIns.length ? ` · ${esc(t('common.chips', { chips: chips(boughtChips(p)) }))}` : ''}</p>
           ${p.status === 'left' ? `<p class="pcard__sub">${esc(t('player.leftWith', { chips: chips(p.leftChips) }))}</p>` : ''}
         </div>
@@ -1615,7 +1690,7 @@ function openEnd(s) {
             .map(
               (p) => `<li class="is-left">
             ${avatar(p)}
-            <span class="count-list__name"><bdi>${esc(p.name)}</bdi><small>${esc(t('end.leftAlready'))}</small></span>
+            <span class="count-list__name" dir="auto">${esc(p.name)}<small>${esc(t('end.leftAlready'))}</small></span>
             <span class="count-list__net"></span>
             <span class="count-list__fixed" dir="ltr">${chips(p.leftChips)}</span>
           </li>`,
@@ -1729,7 +1804,7 @@ function renderResults(s) {
             (r, i) => `<li class="results__row" style="--i:${i}">
           ${avatar(player(g, r.id))}
           <span class="results__main">
-            <span class="results__name"><bdi>${esc(r.name)}</bdi>${r.id === me ? ` <small>· ${esc(t('game.you'))}</small>` : ''}</span>
+            <span class="results__name" dir="auto">${esc(r.name)}${r.id === me ? ` <small>· ${esc(t('game.you'))}</small>` : ''}</span>
             <span class="results__sub">${esc(t('res.bought', { money: m(r.bought, g) }))} · ${esc(t('res.out', { money: m(r.cashOut, g) }))} · ${esc(t('common.chips', { chips: chips(r.chips) }))}${g.pot && unpaidCents(g, player(g, r.id)) > 0 ? ` · <span class="neg">${esc(t('res.credit', { money: m(unpaidCents(g, player(g, r.id)), g) }))}</span>` : ''}</span>
           </span>
           <strong class="results__net ${r.net > 0 ? 'pos' : r.net < 0 ? 'neg' : ''}">${m(r.net, g, { sign: true })}</strong>
@@ -1904,10 +1979,11 @@ async function removeHistory(entries) {
         cloudHistory = (cloudHistory ?? []).filter((g) => g.id !== h.id);
       }
       storage.deleteHistory(h.id);
+      storage.dropGame(h.id);
     }),
   );
   if (failed.size) toast(t('err.generic'), { tone: 'error' });
-  if (location.hash === '#/stats') viewStats(undefined, { refetch: false });
+  if (location.pathname === '/history') viewStats(undefined, { refetch: false });
 }
 
 function viewStats(id, { refetch = true } = {}) {
@@ -1941,7 +2017,7 @@ function viewStats(id, { refetch = true } = {}) {
   app.innerHTML = `
   <main class="page page--form">
     <header class="topbar">
-      <a class="icon-btn" href="#/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <a class="icon-btn" href="/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
       <h1 class="topbar__title">${esc(t('stats.title'))}</h1>
       ${accountButton()}
       ${langButton()}
@@ -1983,7 +2059,7 @@ function viewStats(id, { refetch = true } = {}) {
             .map(
               (r, i) => `<li class="results__row" style="--i:${i}">
             <span class="rank">${i + 1}</span>
-            <span class="results__main"><span class="results__name"><bdi>${esc(r.name)}</bdi></span>
+            <span class="results__main"><span class="results__name" dir="auto">${esc(r.name)}</span>
             <span class="results__sub">${esc(r.games === 1 ? t('stats.game1') : t('stats.games', { n: r.games }))}</span></span>
             <strong class="results__net ${r.net > 0 ? 'pos' : r.net < 0 ? 'neg' : ''}">${money(r.net, cur, { sign: true })}</strong>
           </li>`,
@@ -2004,7 +2080,7 @@ function viewStats(id, { refetch = true } = {}) {
               ${me ? `<strong class="${me.net > 0 ? 'pos' : me.net < 0 ? 'neg' : ''}">${money(me.net, h.currency, { sign: true })}</strong>` : ''}`;
               const del = `<button class="icon-btn list-item__del" data-del="${esc(h.id)}" aria-label="${esc(t('stats.delete'))}">${ICONS.close}</button>`;
               return h.cloud
-                ? `<li class="list-item"><a class="list-row" href="#/stats/${esc(h.id)}">${main} ${ICONS.arrow}</a>${del}</li>`
+                ? `<li class="list-item"><a class="list-row" href="/history/${esc(h.id)}">${main} ${ICONS.arrow}</a>${del}</li>`
                 : `<li class="list-item"><div class="list-row list-row--static">${main}</div>${del}</li>`;
             })
             .join('')}</ul>
@@ -2024,7 +2100,7 @@ function viewStats(id, { refetch = true } = {}) {
     }
   });
   if (signedIn && refetch) {
-    loadCloudHistory().finally(() => location.hash === '#/stats' && viewStats(undefined, { refetch: false }));
+    loadCloudHistory().finally(() => location.pathname === '/history' && viewStats(undefined, { refetch: false }));
   }
 }
 
@@ -2034,7 +2110,7 @@ function viewPastGame(id) {
   if (!row) {
     if (cloud.user() && cloudHistory === null) {
       renderLoading();
-      loadCloudHistory().then(() => location.hash === `#/stats/${id}` && viewPastGame(id));
+      loadCloudHistory().then(() => location.pathname === `/history/${id}` && viewPastGame(id));
       return;
     }
     return renderMissing();
@@ -2051,7 +2127,7 @@ function viewPastGame(id) {
   };
   renderResults(viewer);
   const back = app.querySelector('.gbar .icon-btn');
-  if (back) back.setAttribute('href', '#/stats');
+  if (back) back.setAttribute('href', '/history');
   if (row.is_host) {
     const foot = app.querySelector('.page--results .stack');
     foot?.insertAdjacentHTML('beforeend', `<button class="btn btn--ghost btn--danger-text" data-remove>${esc(t('stats.deleteForAll'))}</button>`);
@@ -2064,8 +2140,9 @@ function viewPastGame(id) {
       .removeGame(id)
       .then(() => {
         storage.deleteHistory(id);
+        storage.dropGame(id);
         cloudHistory = (cloudHistory ?? []).filter((g) => g.id !== id);
-        location.hash = '#/stats';
+        go('/history', { replace: true });
       })
       .catch(() => toast(t('err.generic'), { tone: 'error' }));
   });
@@ -2073,9 +2150,163 @@ function viewPastGame(id) {
 
 // ---------------- boot ----------------
 
+// ---------------- admin ----------------
+// The owner's numbers. The server only answers the admin account
+// (admin_stats in supabase/migrations); everyone else gets "not found".
+
+let adminTimer = null;
+
+function bars(values, { labels = [], every = 1, tone = 'brass' } = {}) {
+  const max = Math.max(1, ...values);
+  const w = 100 / values.length;
+  return `<svg class="chart chart--${tone}" viewBox="0 0 100 44" preserveAspectRatio="none" role="img">
+      ${values
+        .map((v, i) => {
+          const h = (v / max) * 40;
+          return `<rect x="${(i * w + w * 0.15).toFixed(2)}" y="${(42 - h).toFixed(2)}" width="${(w * 0.7).toFixed(2)}" height="${Math.max(h, v ? 0.8 : 0.3).toFixed(2)}" rx="0.6"><title>${esc(labels[i] ?? '')}: ${v}</title></rect>`;
+        })
+        .join('')}
+    </svg>
+    <div class="chart__axis" dir="ltr">${labels
+      .map((l, i) => `<span style="width:${w}%">${i % every === 0 ? esc(l) : ''}</span>`)
+      .join('')}</div>`;
+}
+
+function kpi(label, value, sub = '') {
+  return `<div class="kpi"><span class="kpi__label">${esc(label)}</span><strong class="kpi__value">${value}</strong>${sub ? `<span class="kpi__sub">${sub}</span>` : ''}</div>`;
+}
+
+function viewAdmin() {
+  clearInterval(adminTimer);
+  if (!cloud.user()) return renderMissing();
+  renderLoading();
+  const load = () =>
+    cloud
+      .adminStats()
+      .then((d) => location.pathname === '/admin' && renderAdmin(d))
+      .catch(() => {
+        clearInterval(adminTimer);
+        if (location.pathname === '/admin') renderMissing();
+      });
+  load();
+  adminTimer = setInterval(() => (location.pathname === '/admin' ? load() : clearInterval(adminTimer)), 60000);
+}
+
+function renderAdmin(d) {
+  const n = (x) => new Intl.NumberFormat(lang() === 'he' ? 'he-IL' : 'en-US').format(x ?? 0);
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
+  const days = d.daily ?? [];
+  const dayLabels = days.map((x) => x.day.slice(8));
+  const weekdays = lang() === 'he' ? ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'] : ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const sizes = Object.entries(d.sizes ?? {}).sort((a, b) => a[0] - b[0]);
+  const tipRows = Object.entries(d.tips?.by_pct ?? {}).sort((a, b) => a[0] - b[0]);
+  const g = d.games ?? {};
+  const u = d.users ?? {};
+  app.innerHTML = `
+  <main class="page page--admin">
+    <header class="topbar">
+      <a class="icon-btn" href="/" aria-label="${esc(t('new.back'))}">${ICONS.back}</a>
+      <h1 class="topbar__title">${esc(t('admin.title'))}</h1>
+      <button class="lang-btn" data-refresh>${esc(t('admin.refresh'))}</button>
+      ${langButton()}
+    </header>
+    <p class="hint">${esc(t('admin.updated', { time: clock(new Date(d.generated_at)) }))}</p>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.now'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.liveNow'), n(g.live_now), g.stale_live ? esc(t('admin.stale', { n: g.stale_live })) : '')}
+        ${kpi(t('admin.playersNow'), n((d.live ?? []).reduce((a, x) => a + x.players, 0)))}
+      </div>
+      ${
+        (d.live ?? []).length
+          ? `<ul class="list list--compact">${d.live
+              .map(
+                (x) => `<li class="list-row list-row--static"><span class="list-row__main">
+              <span class="list-row__title">${esc(t('admin.liveRow', { n: x.players }))}</span>
+              <span class="list-row__sub">${esc(t('admin.startedAt', { time: clock(new Date(x.started)) }))} · ${esc(duration(Date.now() - new Date(x.started)))}</span></span>
+              <strong>${money(x.buyin_cents, x.currency)}</strong></li>`,
+              )
+              .join('')}</ul>`
+          : ''
+      }
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.users'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.accounts'), n(u.total), esc(t('admin.newIn', { d1: n(u.d1), d7: n(u.d7), d30: n(u.d30) })))}
+        ${kpi(t('admin.active7'), n(u.active7), pct(u.active7, u.total))}
+        ${kpi(t('admin.hosts'), n(u.hosts), esc(t('admin.returning', { n: n(u.returning_hosts) })))}
+        ${kpi(t('admin.seats'), n(g.seats), esc(t('admin.signedSeats', { p: pct(g.account_seats, g.seats) })))}
+      </div>
+      <h3 class="chart__title">${esc(t('admin.newUsers30'))}</h3>
+      ${bars(days.map((x) => x.users), { labels: dayLabels, every: 5, tone: 'blue' })}
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.games'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.gamesTotal'), n(g.total), esc(t('admin.newIn', { d1: n(g.d1), d7: n(g.d7), d30: n(g.d30) })))}
+        ${kpi(t('admin.ended'), n(g.ended), pct(g.ended, g.total))}
+        ${kpi(t('admin.avgPlayers'), g.avg_players ?? '—')}
+        ${kpi(t('admin.avgLength'), g.avg_minutes ? esc(duration(g.avg_minutes * 60000)) : '—')}
+        ${kpi(t('admin.buyins'), n(g.buyins), g.total ? esc(t('admin.perGame', { n: (g.buyins / g.total).toFixed(1) })) : '')}
+      </div>
+      <h3 class="chart__title">${esc(t('admin.games30'))}</h3>
+      ${bars(days.map((x) => x.games), { labels: dayLabels, every: 5 })}
+      <h3 class="chart__title">${esc(t('admin.players30'))}</h3>
+      ${bars(days.map((x) => x.players), { labels: dayLabels, every: 5, tone: 'green' })}
+      <h3 class="chart__title">${esc(t('admin.byHour'))}</h3>
+      ${bars(d.hours ?? [], { labels: (d.hours ?? []).map((_, h) => String(h)), every: 3 })}
+      <h3 class="chart__title">${esc(t('admin.byDay'))}</h3>
+      ${bars(d.weekdays ?? [], { labels: weekdays })}
+      ${
+        sizes.length
+          ? `<h3 class="chart__title">${esc(t('admin.bySize'))}</h3>${bars(
+              sizes.map((x) => x[1]),
+              { labels: sizes.map((x) => x[0]), tone: 'green' },
+            )}`
+          : ''
+      }
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.money'))}</h2>
+      <ul class="list list--compact">${(d.money ?? [])
+        .map(
+          (x) => `<li class="list-row list-row--static"><span class="list-row__main">
+          <span class="list-row__title">${money(x.buyin_cents, x.currency)}</span>
+          <span class="list-row__sub">${esc(t('admin.moneyRow', { games: n(x.games), avg: money(x.avg_cents, x.currency) }))}</span></span></li>`,
+        )
+        .join('')}</ul>
+    </section>
+
+    <section class="section">
+      <h2 class="eyebrow">${esc(t('admin.tips'))}</h2>
+      <div class="kpis">
+        ${kpi(t('admin.tipGames'), n(d.tips?.games), pct(d.tips?.games, g.ended))}
+        ${Object.entries(d.tips?.by_currency ?? {})
+          .map(([cur, c]) => kpi(t('admin.tipTotal', { cur }), money(c, cur)))
+          .join('')}
+      </div>
+      ${
+        tipRows.length
+          ? `<h3 class="chart__title">${esc(t('admin.tipChoice'))}</h3>${bars(
+              tipRows.map((x) => x[1]),
+              { labels: tipRows.map((x) => (Number(x[0]) ? `${x[0]}%` : t('tip.none'))) },
+            )}`
+          : ''
+      }
+    </section>
+  </main>`;
+  app.querySelector('[data-refresh]').addEventListener('click', () => viewAdmin());
+}
+
 initLang();
+upgradeOldUrl();
 initCloud().finally(route);
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
