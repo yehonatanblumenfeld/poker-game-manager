@@ -618,7 +618,7 @@ function viewNew() {
     f.seats = Math.min(10, Math.max(2, f.seats + Number(step.dataset.step)));
     form.seatsOut.value = f.seats;
   });
-  form.addEventListener('submit', (e) => {
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const { v, ok } = sync();
     if (!ok) {
@@ -632,6 +632,9 @@ function viewNew() {
     }
     storage.setLastName(v.hostName);
     const game = createGame(v);
+    // Tie the host's seat to their account from the start, so their other
+    // devices land on it rather than taking a second seat.
+    if (cloud.user()) player(game, game.managerId).acct = await accountKey(cloud.user().id);
     storage.saveHosted(game);
     go(`/game/${game.code}`, { replace: true });
   });

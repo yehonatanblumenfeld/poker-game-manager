@@ -1,7 +1,7 @@
 // Offline shell: the app still opens without a connection (players' phones
 // need one to reach the host). Network first, so a deploy shows up at once
 // and the host and players never run different versions.
-const CACHE = 'chipper-v15';
+const CACHE = 'chipper-v16';
 const SHELL = [
   '/',
   '/css/app.css',

@@ -199,11 +199,24 @@ export function apply(game, type, payload, actor) {
       // same seat, from any device.
       const acct = isKey(payload.acct) ? payload.acct : null;
       const pic = acct && isPhoto(payload.pic) ? payload.pic : null;
-      const existing = game.players.find((p) => p.key === key) || (acct && game.players.find((p) => p.acct === acct));
-      if (existing) {
-        if (acct && !existing.acct) existing.acct = acct;
-        if (pic && existing.acct === acct) existing.pic = pic;
-        return { pid: existing.id };
+      // The account's seat wins over this device's seat: a device can first
+      // join as a guest (not signed in yet, or the check failed) and sign in
+      // later, and that must not leave the account with two seats.
+      const byAcct = acct && game.players.find((p) => p.acct === acct);
+      const byKey = game.players.find((p) => p.key === key);
+      if (byAcct) {
+        if (byKey && byKey !== byAcct && (!byKey.acct || byKey.acct === acct) && byKey.id !== game.managerId && !byKey.buyIns.length) {
+          game.players = game.players.filter((x) => x.id !== byKey.id);
+          log(game, 'remove', byKey.id, { name: byKey.name, quiet: true });
+          bump(game);
+        }
+        if (pic) byAcct.pic = pic;
+        return { pid: byAcct.id };
+      }
+      if (byKey) {
+        if (acct && !byKey.acct) byKey.acct = acct;
+        if (pic && byKey.acct === acct) byKey.pic = pic;
+        return { pid: byKey.id };
       }
       const name = cleanName(payload.name);
       if (!name) throw new ActionError('name');

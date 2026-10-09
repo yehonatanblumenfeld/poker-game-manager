@@ -325,3 +325,29 @@ test('one seat per account: a second device on the same account gets the same se
   assert.equal(hostAgain.pid, g.managerId);
   assert.ok(g.players.every((p) => p.acct === null || /^[0-9a-f]{32}$/.test(p.acct)));
 });
+
+test('one seat per account: a device that joined as a guest and signs in later moves to the account seat', async () => {
+  const { accountKey } = await import('../js/store.js');
+  const { g } = setup();
+  const host = { pid: g.managerId, host: true };
+  const me = g.players.find((p) => p.id === g.managerId);
+  me.acct = await accountKey('user-yoni');
+  // The phone joins before it is signed in: a guest seat.
+  const guest = apply(g, 'join', { key: 'f'.repeat(32), name: 'Phone' }, { pid: null, host: false });
+  assert.notEqual(guest.pid, g.managerId);
+  // Signed in now: same device, same account as the host.
+  const back = apply(g, 'join', { key: 'f'.repeat(32), acct: me.acct, name: 'Phone' }, { pid: null, host: false });
+  assert.equal(back.pid, g.managerId);
+  assert.ok(!g.players.some((p) => p.id === guest.pid), 'the empty guest seat is gone');
+  assert.equal(g.players.filter((p) => p.acct === me.acct).length, 1);
+  // A duplicate that already has buy-ins is kept for the host to sort out,
+  // but the account still lands on its own seat.
+  const avi = await accountKey('user-avi');
+  const a = apply(g, 'join', { key: 'a'.repeat(32), acct: avi, name: 'Avi' }, { pid: null, host: false });
+  const b = apply(g, 'join', { key: 'b'.repeat(32), name: 'Avi phone' }, { pid: null, host: false });
+  apply(g, 'buyin', { pid: b.pid, cents: 10000 }, host);
+  const again = apply(g, 'join', { key: 'b'.repeat(32), acct: avi, name: 'Avi phone' }, { pid: null, host: false });
+  assert.equal(again.pid, a.pid);
+  assert.ok(g.players.some((p) => p.id === b.pid));
+  assert.equal(g.players.find((p) => p.id === b.pid).acct, null);
+});
